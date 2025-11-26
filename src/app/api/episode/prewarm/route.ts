@@ -1,7 +1,20 @@
+// src/app/api/episode/prewarm/route.ts
 import { getHiAnimeScraper } from "@/lib/hianime";
 import PocketBase from "pocketbase";
 
-const pb = new PocketBase(process.env.NEXT_PUBLIC_POCKETBASE_URL);
+const PB_BASE_URL =
+  process.env.POCKETBASE_URL ?? process.env.NEXT_PUBLIC_POCKETBASE_URL;
+
+if (!PB_BASE_URL) {
+  console.error(
+    "PocketBase misconfigured: set POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL",
+  );
+  throw new Error(
+    "PocketBase URL not configured (POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL)",
+  );
+}
+
+const pb = new PocketBase(PB_BASE_URL);
 
 // reuse same TTL as your /episode/sources route
 const CACHE_TTL_SECONDS = 60 * 30; // 30 minutes
@@ -24,7 +37,7 @@ const sanitize = (raw?: string | null) => {
 async function prewarmEpisodes(
   episodeIds: string[],
   category: "sub" | "dub" | "raw",
-  server: string
+  server: string,
 ) {
   try {
     const scraper = await getHiAnimeScraper();
@@ -33,11 +46,20 @@ async function prewarmEpisodes(
       return;
     }
 
-    // admin auth (or use whatever you already use in /episode/sources)
-    await pb.admins.authWithPassword(
-      process.env.PB_ADMIN_EMAIL!,
-      process.env.PB_ADMIN_PASSWORD!
-    );
+    const adminEmail = process.env.PB_ADMIN_EMAIL;
+    const adminPassword = process.env.PB_ADMIN_PASSWORD;
+
+    if (!adminEmail || !adminPassword) {
+      console.error("PocketBase admin env missing (prewarm)", {
+        hasEmail: !!adminEmail,
+        hasPassword: !!adminPassword,
+      });
+      return;
+    }
+
+    if (!pb.authStore.isValid) {
+      await pb.admins.authWithPassword(adminEmail, adminPassword);
+    }
 
     const now = Date.now();
 
@@ -67,11 +89,7 @@ async function prewarmEpisodes(
       // 2) fetch from scraper
       console.log(`[prewarm] scraping ${episodeId} (${category}, ${server})`);
 
-      const data = await scraper.getEpisodeSources(
-        episodeId,
-        server,
-        category
-      );
+      const data = await scraper.getEpisodeSources(episodeId, server, category);
 
       const recordPayload = {
         compositeKey: key,
@@ -84,9 +102,7 @@ async function prewarmEpisodes(
 
       // 3) upsert in PocketBase
       if (cached) {
-        await pb
-          .collection("episode_sources")
-          .update(cached.id, recordPayload);
+        await pb.collection("episode_sources").update(cached.id, recordPayload);
       } else {
         await pb.collection("episode_sources").create(recordPayload);
       }
@@ -100,14 +116,13 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const episodeIds = body.episodeIds as string[] | undefined;
-    const category =
-      (body.category as "sub" | "dub" | "raw") ?? "sub";
+    const category = (body.category as "sub" | "dub" | "raw") ?? "sub";
     const server = (body.server as string) ?? "hd-1";
 
     if (!Array.isArray(episodeIds) || episodeIds.length === 0) {
       return Response.json(
         { error: "episodeIds must be a non-empty array" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 

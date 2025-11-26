@@ -1,7 +1,21 @@
+// src/app/api/episode/sources/route.ts
 import { getHiAnimeScraper } from "@/lib/hianime";
 import PocketBase from "pocketbase";
 
-const pb = new PocketBase(process.env.NEXT_PUBLIC_POCKETBASE_URL!);
+const PB_BASE_URL =
+  process.env.POCKETBASE_URL ?? process.env.NEXT_PUBLIC_POCKETBASE_URL;
+
+if (!PB_BASE_URL) {
+  // Hard fail at startup if misconfigured
+  console.error(
+    "PocketBase misconfigured: set POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL",
+  );
+  throw new Error(
+    "PocketBase URL not configured (POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL)",
+  );
+}
+
+const pb = new PocketBase(PB_BASE_URL);
 
 // Cache TTL: 30 minutes (change if you want)
 const CACHE_TTL_SECONDS = 60 * 30;
@@ -37,7 +51,6 @@ export async function GET(req: Request) {
     const category: "sub" | "dub" | "raw" = categoryParam || "sub";
     const server = serverParam || "hd-1";
 
-    // Helpful debug logging for incoming requests (shows raw and sanitized IDs)
     console.debug("GET /api/episode/sources params:", {
       episodeIdRaw,
       episodeId,
@@ -48,28 +61,41 @@ export async function GET(req: Request) {
     if (!episodeId) {
       return Response.json(
         { error: "animeEpisodeId is required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     const compositeKey = makeKey(episodeId, category, server);
     const now = Date.now();
 
-    // Authenticate once as admin (reuse token while valid)
+    // --- ADMIN AUTH WITH SAFETY CHECKS ---
+    const adminEmail = process.env.PB_ADMIN_EMAIL;
+    const adminPassword = process.env.PB_ADMIN_PASSWORD;
+
+    if (!adminEmail || !adminPassword) {
+      console.error("PocketBase admin env missing", {
+        hasEmail: !!adminEmail,
+        hasPassword: !!adminPassword,
+      });
+      return Response.json(
+        { error: "PocketBase admin credentials not configured" },
+        { status: 500 },
+      );
+    }
+
     if (!pb.authStore.isValid) {
       try {
-        await pb.admins.authWithPassword(
-          process.env.PB_ADMIN_EMAIL!,
-          process.env.PB_ADMIN_PASSWORD!
-        );
-      } catch (authErr) {
-        // Log detailed auth error for debugging, but avoid leaking secrets in responses
-        console.error('PocketBase admin auth failed', {
-          message: (authErr as any)?.message,
-          response: (authErr as any)?.response?.data ?? (authErr as any)?.response,
+        await pb.admins.authWithPassword(adminEmail, adminPassword);
+      } catch (authErr: any) {
+        console.error("PocketBase admin auth failed", {
+          baseUrl: PB_BASE_URL,
+          identity: adminEmail,
+          message: authErr?.message,
+          status: authErr?.status,
+          response: authErr?.response ?? authErr?.data,
         });
         return Response.json(
-          { error: 'PocketBase authentication failed' },
+          { error: "PocketBase authentication failed" },
           { status: 503 },
         );
       }
@@ -92,10 +118,8 @@ export async function GET(req: Request) {
       const ageSeconds = (now - fetchedAtMs) / 1000;
 
       if (ageSeconds < CACHE_TTL_SECONDS) {
-        // fresh cache hit
         return Response.json({ data: cached.data, fromCache: true });
       }
-      // else → stale, rescrape below
     }
 
     // 2) Scrape fresh data
@@ -108,17 +132,19 @@ export async function GET(req: Request) {
     let data: any;
     try {
       data = await scraper.getEpisodeSources(episodeId, undefined, category);
-    } catch (scrapeErr) {
-      // Log the full error for debugging and return a useful message/status
+    } catch (scrapeErr: any) {
       console.error("Error during scraper.getEpisodeSources:", {
         episodeId,
         category,
         server,
-        message: (scrapeErr as Error).message,
-        stack: (scrapeErr as Error).stack,
+        message: scrapeErr?.message,
+        stack: scrapeErr?.stack,
       });
-      const message = (scrapeErr as any)?.message || "scrape failed";
-      return Response.json({ error: `scraper error: ${message}` }, { status: 502 });
+      const message = scrapeErr?.message || "scrape failed";
+      return Response.json(
+        { error: `scraper error: ${message}` },
+        { status: 502 },
+      );
     }
 
     // 3) Upsert into PocketBase
@@ -133,9 +159,7 @@ export async function GET(req: Request) {
 
     try {
       if (cached) {
-        await pb
-          .collection("episode_sources")
-          .update(cached.id, recordPayload);
+        await pb.collection("episode_sources").update(cached.id, recordPayload);
       } else {
         await pb.collection("episode_sources").create(recordPayload);
       }
