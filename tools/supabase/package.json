@@ -1,0 +1,15 @@
+{
+  "name": "spabase-migration",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "export": "node export.js",
+    "import": "node import-to-supabase.js",
+    "upload-files": "node upload-files.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.37.0",
+    "axios": "^1.7.7",
+    "fs-extra": "^11.1.1"
+  }
+}

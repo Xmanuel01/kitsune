@@ -1,21 +1,6 @@
 // src/app/api/episode/sources/route.ts
 import { getHiAnimeScraper } from "@/lib/hianime";
-import PocketBase from "pocketbase";
-
-const PB_BASE_URL =
-  process.env.POCKETBASE_URL ?? process.env.NEXT_PUBLIC_POCKETBASE_URL;
-
-if (!PB_BASE_URL) {
-  // Hard fail at startup if misconfigured
-  console.error(
-    "PocketBase misconfigured: set POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL",
-  );
-  throw new Error(
-    "PocketBase URL not configured (POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL)",
-  );
-}
-
-const pb = new PocketBase(PB_BASE_URL);
+import { supabaseAdmin } from "@/lib/supabaseClient";
 
 // Cache TTL: 30 minutes (change if you want)
 const CACHE_TTL_SECONDS = 60 * 30;
@@ -68,47 +53,22 @@ export async function GET(req: Request) {
     const compositeKey = makeKey(episodeId, category, server);
     const now = Date.now();
 
-    // --- ADMIN AUTH WITH SAFETY CHECKS ---
-    const adminEmail = process.env.PB_ADMIN_EMAIL;
-    const adminPassword = process.env.PB_ADMIN_PASSWORD;
-
-    if (!adminEmail || !adminPassword) {
-      console.error("PocketBase admin env missing", {
-        hasEmail: !!adminEmail,
-        hasPassword: !!adminPassword,
-      });
-      return Response.json(
-        { error: "PocketBase admin credentials not configured" },
-        { status: 500 },
-      );
-    }
-
-    if (!pb.authStore.isValid) {
-      try {
-        await pb.admins.authWithPassword(adminEmail, adminPassword);
-      } catch (authErr: any) {
-        console.error("PocketBase admin auth failed", {
-          baseUrl: PB_BASE_URL,
-          identity: adminEmail,
-          message: authErr?.message,
-          status: authErr?.status,
-          response: authErr?.response ?? authErr?.data,
-        });
-        return Response.json(
-          { error: "PocketBase authentication failed" },
-          { status: 503 },
-        );
-      }
-    }
-
-    // 1) Try PocketBase cache
+    // 1) Try Supabase cache (table: episode_sources) using compositeKey
     let cached: any = null;
     try {
-      cached = await pb
-        .collection("episode_sources")
-        .getFirstListItem(`compositeKey="${compositeKey}"`);
-    } catch {
-      // not found is fine → fall through to scrape
+      const { data: existing, error } = await supabaseAdmin
+        .from("episode_sources")
+        .select("*")
+        .eq("compositeKey", compositeKey)
+        .maybeSingle();
+
+      if (error) {
+        console.warn('Supabase select error', error.message || error);
+      } else if (existing) {
+        cached = existing;
+      }
+    } catch (err) {
+      console.warn("Supabase cache read failed", err);
     }
 
     if (cached && cached.data) {
@@ -147,7 +107,7 @@ export async function GET(req: Request) {
       );
     }
 
-    // 3) Upsert into PocketBase
+    // 3) Upsert into Supabase `episode_sources` table using compositeKey as unique key
     const recordPayload = {
       compositeKey,
       animeEpisodeId: episodeId,
@@ -158,13 +118,12 @@ export async function GET(req: Request) {
     };
 
     try {
-      if (cached) {
-        await pb.collection("episode_sources").update(cached.id, recordPayload);
-      } else {
-        await pb.collection("episode_sources").create(recordPayload);
-      }
+      const { error } = await supabaseAdmin
+        .from('episode_sources')
+        .upsert(recordPayload, { onConflict: 'compositeKey' });
+      if (error) console.warn('Supabase upsert error', error.message || error);
     } catch (err) {
-      console.error("Failed to upsert episode_sources:", err);
+      console.error("Failed to upsert episode_sources into Supabase:", err);
       // still return data to the client even if cache save fails
     }
 

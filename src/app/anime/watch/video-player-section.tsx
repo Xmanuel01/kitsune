@@ -12,7 +12,7 @@ import { AlertCircleIcon, Captions, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/store/auth-store";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const VideoPlayerSection = () => {
@@ -57,11 +57,12 @@ const VideoPlayerSection = () => {
       localStorage.setItem("autoSkip", JSON.stringify(value));
       return;
     }
-    const res = await pb.collection("users").update(auth.id, {
-      autoSkip: value,
-    });
-    if (res) {
+    // Persist preference to user metadata in Supabase Auth
+    const { error } = await supabase.auth.updateUser({ data: { autoSkip: value } });
+    if (!error) {
       setAuth({ ...auth, autoSkip: value });
+    } else {
+      console.error('Failed updating autoSkip metadata', error);
     }
   }
 

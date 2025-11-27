@@ -4,7 +4,7 @@ import Button from "./common/custom-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Input } from "./ui/input";
 import DiscordIcon from "@/icons/discord";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import { toast } from "sonner";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -34,21 +34,26 @@ function LoginPopoverButton() {
         return;
       }
 
-      await pb
-        .collection("users")
-        .authWithPassword(formData.username, formData.password);
+      // Supabase expects an email for signin. We treat the provided identity
+      // as email (app historically allowed username/email).
+      const res = await supabase.auth.signInWithPassword({
+        email: formData.username,
+        password: formData.password,
+      });
 
-      if (pb.authStore.isValid && pb.authStore.record) {
+      if (res.error) throw res.error;
+      const user = res.data?.user;
+      if (user) {
         toast.success("Login successful", { style: { background: "green" } });
         clearForm();
         auth.setAuth({
-          id: pb.authStore.record.id,
-          email: pb.authStore.record.email,
-          username: pb.authStore.record.username,
-          avatar: pb.authStore.record.avatar,
-          collectionId: pb.authStore.record.collectionId,
-          collectionName: pb.authStore.record.collectionName,
-          autoSkip: pb.authStore.record.autoSkip,
+          id: user.id,
+          email: user.email || "",
+          username: (user.user_metadata as any)?.username || user.email?.split('@')[0] || "",
+          avatar: (user.user_metadata as any)?.avatar || "",
+          collectionId: "users",
+          collectionName: "users",
+          autoSkip: false,
         });
       }
     } catch (e) {
@@ -73,20 +78,21 @@ function LoginPopoverButton() {
     }
 
     try {
-      const user = await pb.collection("users").create({
-        username: formData.username,
+      // Sign up with Supabase Auth and attach the username to user_metadata
+      const res = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
-        passwordConfirm: formData.confirm_password,
+        options: {
+          data: { username: formData.username },
+        },
       });
 
-      if (user) {
-        toast.success("Account created successfully. Please login.", {
-          style: { background: "green" },
-        });
-        clearForm();
-        setTabValue("login");
-      }
+      if (res.error) throw res.error;
+      toast.success("Account created successfully. Please login.", {
+        style: { background: "green" },
+      });
+      clearForm();
+      setTabValue("login");
     } catch (e: any) {
       if (e.response?.data) {
         for (const key in e.response?.data) {
@@ -112,26 +118,14 @@ function LoginPopoverButton() {
   };
 
   const loginWithDiscord = async () => {
-    const res = await pb.collection("users").authWithOAuth2({
-      provider: "discord",
-    });
-
-    if (pb.authStore.isValid && pb.authStore.record) {
-      await pb.collection("users").update(pb.authStore.record?.id!, {
-        username: res.meta?.username,
-      });
-
-      toast.success("Login successful", { style: { background: "green" } });
-      auth.setAuth({
-        id: pb.authStore.record.id,
-        email: pb.authStore.record.email,
-        username: pb.authStore.record.username,
-        avatar: pb.authStore.record.avatar,
-        collectionId: pb.authStore.record.collectionId,
-        collectionName: pb.authStore.record.collectionName,
-        autoSkip: pb.authStore.record.autoSkip,
-      });
+    // Use Supabase OAuth sign-in. This will redirect the user to the provider.
+    const res = await supabase.auth.signInWithOAuth({ provider: "discord" as any });
+    if (res.error) {
+      console.error("OAuth error:", res.error);
+      toast.error("OAuth sign-in failed", { style: { background: "red" } });
     }
+    // Supabase will handle the redirect and session; onAuthStateChange listener
+    // elsewhere will reconcile the app state.
   };
 
   return (

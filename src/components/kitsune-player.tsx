@@ -22,7 +22,7 @@ import { env } from "next-runtime-env"; // Ensure this works in client component
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 import useBookMarks from "@/hooks/use-get-bookmark";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import Image from "next/image";
 
 const WATCH_PROGRESS_UPDATE_INTERVAL = 10000; // Update every 10 seconds
@@ -93,60 +93,60 @@ function KitsunePlayer({
   }, [autoSkip]);
 
   useEffect(() => {
-  // we need a list of episodes and the current one
-  if (!episodes) return;
-  if (!serversData?.episodeId) return;
+    // we need a list of episodes and the current one
+    if (!episodes) return;
+    if (!serversData?.episodeId) return;
 
-  const epsArray = (episodes as any).episodes ?? [];
-  if (!Array.isArray(epsArray) || epsArray.length === 0) return;
+    const epsArray = (episodes as any).episodes ?? [];
+    if (!Array.isArray(epsArray) || epsArray.length === 0) return;
 
-  const currentEpisodeId = serversData.episodeId;
+    const currentEpisodeId = serversData.episodeId;
 
-  const idx = epsArray.findIndex(
-    (ep: any) =>
-      ep.id === currentEpisodeId ||
-      ep.episodeId === currentEpisodeId ||
-      ep.slug === currentEpisodeId
-  );
+    const idx = epsArray.findIndex(
+      (ep: any) =>
+        ep.id === currentEpisodeId ||
+        ep.episodeId === currentEpisodeId ||
+        ep.slug === currentEpisodeId,
+    );
 
-  if (idx === -1) return;
+    if (idx === -1) return;
 
-  // pick the next 5 episodes to prewarm
-  const nextEpisodes: string[] = epsArray
-    .slice(idx + 1, idx + 1 + 5)
-    .map((ep: any) => ep.id ?? ep.episodeId ?? ep.slug)
-    .filter(Boolean);
+    // pick the next 5 episodes to prewarm
+    const nextEpisodes: string[] = epsArray
+      .slice(idx + 1, idx + 1 + 5)
+      .map((ep: any) => ep.id ?? ep.episodeId ?? ep.slug)
+      .filter(Boolean);
 
-  if (nextEpisodes.length === 0) return;
+    if (nextEpisodes.length === 0) return;
 
-  fetch("/api/episode/prewarm", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      episodeIds: nextEpisodes,
-      category: subOrDub ?? "sub",
-      // server: serversData?.server ?? "hd-1", // if/when you add server support there
-    }),
-  }).catch((err) => console.error("prewarm error:", err));
-}, [episodes, serversData?.episodeId, subOrDub]);
+    fetch("/api/episode/prewarm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        episodeIds: nextEpisodes,
+        category: subOrDub ?? "sub",
+        // server: serversData?.server ?? "hd-1", // if/when you add server support there
+      }),
+    }).catch((err) => console.error("prewarm error:", err));
+  }, [episodes, serversData?.episodeId, subOrDub]);
 
-const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
+  const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
 
   // --- Construct Proxy URI ---
-    const uri = useMemo(() => {
-      const firstSourceUrl = episodeInfo?.sources?.[0]?.url;
-      const referer = episodeInfo?.headers?.Referer;
-      if (!firstSourceUrl) return null;
+  const uri = useMemo(() => {
+    const firstSourceUrl = episodeInfo?.sources?.[0]?.url;
+    const referer = episodeInfo?.headers?.Referer;
+    if (!firstSourceUrl) return null;
 
-      try {
-        const url = encodeURIComponent(firstSourceUrl);
-        const refParam = referer ? `&ref=${encodeURIComponent(referer)}` : "";
-        return `${proxyBaseURI}?url=${url}${refParam}`;
-      } catch (error) {
-        console.error("Error constructing proxy URI:", error);
-        return null;
-      }
-    }, [episodeInfo]);
+    try {
+      const url = encodeURIComponent(firstSourceUrl);
+      const refParam = referer ? `&ref=${encodeURIComponent(referer)}` : "";
+      return `${proxyBaseURI}?url=${url}${refParam}`;
+    } catch (error) {
+      console.error("Error constructing proxy URI:", error);
+      return null;
+    }
+  }, [episodeInfo, proxyBaseURI]);
 
   const skipTimesRef = useRef<{
     introStart?: number;
@@ -192,18 +192,39 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
       hasMetMinWatchTimeRef.current = false; // Reset min watch time check
 
       // Now find the specific watched record ID for THIS episode
-      // Fetch again with expand (or use initial list if sufficient)
       try {
-        const expandedBookmark = await pb.collection("bookmarks").getOne(id, {
-          expand: "watchHistory",
-        });
+        const { data: expandedBookmark, error: bookmarkError } = await supabase
+          .from("bookmarks")
+          .select("*")
+          .eq("id", id)
+          .maybeSingle();
+
+        if (bookmarkError) {
+          throw bookmarkError;
+        }
 
         if (!isMounted) return;
 
-        const history = expandedBookmark.expand?.watchHistory as
-          | any[]
-          | undefined;
-        const existingWatched = history?.find(
+        let history: any[] = [];
+        if (expandedBookmark) {
+          if (
+            Array.isArray(expandedBookmark.watchHistory) &&
+            expandedBookmark.watchHistory.length
+          ) {
+            const ids = expandedBookmark.watchHistory;
+            const { data: watchedRows } = await supabase
+              .from("watched")
+              .select("*")
+              .in("id", ids);
+            history = watchedRows || [];
+          } else if (
+            expandedBookmark.expand &&
+            Array.isArray((expandedBookmark.expand as any).watchHistory)
+          ) {
+            history = (expandedBookmark.expand as any).watchHistory;
+          }
+        }
+        const existingWatched = history.find(
           (watched: any) => watched.episodeId === serversData.episodeId,
         );
 
@@ -217,16 +238,15 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
             initialSeekTimeRef.current !== null &&
             initialSeekTimeRef.current >= WATCH_PROGRESS_MIN_WATCH_TIME;
         } else {
-          watchedRecordIdRef.current = null; // Explicitly set to null
-          initialSeekTimeRef.current = null; // Ensure it's null if no record
+          watchedRecordIdRef.current = null;
+          initialSeekTimeRef.current = null;
           hasMetMinWatchTimeRef.current = false;
         }
       } catch (e) {
         console.error("Error fetching bookmark watch history:", e);
         if (!isMounted) return;
-        // Keep bookmarkId, but assume no watched record found
         watchedRecordIdRef.current = null;
-        initialSeekTimeRef.current = null; // Ensure it's null if no record
+        initialSeekTimeRef.current = null;
         hasMetMinWatchTimeRef.current = false;
       }
     };
@@ -234,10 +254,7 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
     fetchBookmarkAndWatchedId();
 
     return () => {
-      isMounted = false; // Cleanup flag
-      // Optional: Clear refs on unmount? Or rely on fetch logic?
-      // bookmarkIdRef.current = null;
-      // watchedRecordIdRef.current = null;
+      isMounted = false;
     };
   }, [
     auth,
@@ -275,20 +292,19 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
     skipTimesRef.current.introEnd = introEnd;
 
     const outroStart = episodeInfo?.outro?.start;
-    const outroEnd = episodeInfo?.outro?.end; // Use let for potential modification
+    const outroEnd = episodeInfo?.outro?.end;
     skipTimesRef.current.validOutro =
       typeof outroStart === "number" &&
       typeof outroEnd === "number" &&
-      outroStart < outroEnd; // Adjust condition if needed
+      outroStart < outroEnd;
     skipTimesRef.current.outroStart = outroStart;
-    skipTimesRef.current.outroEnd = outroEnd; // Store the raw value
+    skipTimesRef.current.outroEnd = outroEnd;
 
-    // Subtitle Track Selector Options
     const refererValue = episodeInfo?.headers?.Referer;
     const refParam = refererValue ? `&ref=${encodeURIComponent(refererValue)}` : "";
 
     const trackOptions: any = (episodeInfo?.tracks ?? []).map((track) => ({
-      default: track.lang === "English", // Example default logic
+      default: track.lang === "English",
       html: track.lang,
       url: `${proxyBaseURI}?url=${encodeURIComponent(track.url)}${refParam}`,
     }));
@@ -297,7 +313,6 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
       (track) => track.lang === "English",
     )?.url;
 
-    // Direct Subtitle Option based on subOrDub
     const subtitleConfig: Option["subtitle"] =
       subOrDub === "sub"
         ? {
@@ -308,33 +323,32 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
             }`,
             type: "vtt",
             style: {
-              // Example styles
               color: "#FFFFFF",
-              fontSize: "22px", // Base size, will be adjusted
+              fontSize: "22px",
               textShadow: "2px 2px 4px rgba(0,0,0,0.8)",
             },
             encoding: "utf-8",
-            escape: false, // Allow potential styling tags in VTT
+            escape: false,
           }
-        : {}; // Explicitly hide if 'dub'
+        : {};
 
     const manualSkipControl = {
-      name: "manual-skip", // Unique name
-      position: "right", // Place near other controls
+      name: "manual-skip",
+      position: "right",
       html: `
                 <div style="display: flex; align-items: center; gap: 4px; padding: 0 6px;">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/></svg>
                     <span class="art-skip-text">Skip</span>
                 </div>
-            `, // Icon + Text (use a class for text if needed)
-      tooltip: "Skip", // Initial tooltip
+            `,
+      tooltip: "Skip",
       style: {
-        display: "none", // Start hidden
+        display: "none",
         cursor: "pointer",
         borderRadius: "4px",
-        marginRight: "10px", // Space from toggle
-        padding: "3px 0", // Adjust padding for vertical centering
+        marginRight: "10px",
+        padding: "3px 0",
       },
       click: function (controlItem: any) {
         const art = artInstanceRef.current;
@@ -362,16 +376,14 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
           currentTime >= outroStart &&
           currentTime < resolvedOutroEnd
         ) {
-          // Seek slightly before end if target is duration
           seekTarget =
             resolvedOutroEnd === duration ? duration - 0.1 : resolvedOutroEnd;
         }
 
         if (typeof seekTarget === "number") {
-          art.seek = Math.min(seekTarget, duration); // Seek
+          art.seek = Math.min(seekTarget, duration);
         }
 
-        // Hide the button immediately after click
         if (controlItem.style) controlItem.style.display = "none";
       },
     };
@@ -382,7 +394,7 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
     const finalOptions: Option = {
       container: artContainerRef.current,
       url: uri,
-      type: "m3u8", // Explicitly set type for HLS
+      type: "m3u8",
       customType: {
         m3u8: (
           videoElement: HTMLMediaElement,
@@ -392,29 +404,41 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
           if (Hls.isSupported()) {
             // Destroy previous HLS instance if attached to this player
             if (hlsInstanceRef.current) {
-              hlsInstanceRef.current.destroy();
+              try {
+                hlsInstanceRef.current.destroy();
+              } catch {
+                // ignore
+              }
+              hlsInstanceRef.current = null;
             }
+
             const hls = new Hls();
             hls.loadSource(url);
             hls.attachMedia(videoElement);
-            hlsInstanceRef.current = hls; // Store ref
-            currentHlsInstanceForCleanup = hls; // Store for cleanup
-            // Make sure HLS instance is destroyed when ArtPlayer instance is destroyed
+
+            hlsInstanceRef.current = hls;
+            currentHlsInstanceForCleanup = hls;
+
+            // 🔴 expose to plugins: art.hls is what artplayer-plugin-hls-control expects
+            (artPlayerInstance as any).hls = hls;
+
             artPlayerInstance.on("destroy", () => {
-              if (hlsInstanceRef.current === hls) {
-                // Check if it's the same instance
+              try {
                 hls.destroy();
-                hlsInstanceRef.current = null;
-                currentHlsInstanceForCleanup = null;
-                console.log(
-                  "HLS instance destroyed via ArtPlayer destroy event.",
-                );
+              } catch {
+                // ignore
               }
+              if (hlsInstanceRef.current === hls) {
+                hlsInstanceRef.current = null;
+              }
+              (artPlayerInstance as any).hls = null;
+              currentHlsInstanceForCleanup = null;
+              console.log("HLS instance destroyed via ArtPlayer destroy event.");
             });
           } else if (
             videoElement.canPlayType("application/vnd.apple.mpegurl")
           ) {
-            videoElement.src = url; // Fallback for Safari native HLS
+            videoElement.src = url;
           } else {
             artPlayerInstance.notice.show =
               "HLS playback is not supported on your browser.";
@@ -423,26 +447,24 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
       },
       plugins: [
         artplayerPluginHlsControl({
-          // Configure HLS controls
           quality: {
             control: true,
             setting: true,
             getName: (level: { height?: number; bitrate?: number }) =>
-              level.height ? `${level.height}P` : "Auto", // Type level
+              level.height ? `${level.height}P` : "Auto",
             title: "Quality",
             auto: "Auto",
           },
           audio: {
             control: true,
             setting: true,
-            getName: (track: { name?: string }) => track.name ?? "Unknown", // Type track
+            getName: (track: { name?: string }) => track.name ?? "Unknown",
             title: "Audio",
             auto: "Auto",
           },
         }),
         artplayerPluginAmbilight({
-          // Configure Ambilight
-          blur: "30", // Use numbers
+          blur: "30",
           opacity: 0.8,
           frequency: 10,
           duration: 0.3,
@@ -450,7 +472,6 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         }),
       ],
       settings: [
-        // Configure settings panel items
         {
           width: 250,
           html: "Subtitle",
@@ -458,27 +479,29 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
           selector: [
             {
               html: "Display",
-              tooltip: subOrDub === "sub" ? "Hide" : "Show", // Initial state based on prop
-              switch: subOrDub === "sub", // Switch is ON if sub
+              tooltip: subOrDub === "sub" ? "Hide" : "Show",
+              switch: subOrDub === "sub",
               onSwitch: function (item: any) {
-                const showSubtitle = !item.switch; // The new state
+                const showSubtitle = !item.switch;
                 art.subtitle.show = showSubtitle;
                 item.tooltip = showSubtitle ? "Hide" : "Show";
                 console.log(`Subtitle display set to: ${showSubtitle}`);
-                return showSubtitle; // Return the new switch state
+                return showSubtitle;
               },
             },
-            ...trackOptions, // Add subtitle track choices
+            ...trackOptions,
           ],
           onSelect: function (item: any) {
-            // Type the item
             if (item.url && typeof item.url === "string") {
-              art.subtitle.switch(`${proxyBaseURI}?url=${item.url}${refParam}`, {
-                name: item.html,
-              });
+              art.subtitle.switch(
+                `${proxyBaseURI}?url=${item.url}${refParam}`,
+                {
+                  name: item.html,
+                },
+              );
               return item.html ?? "Subtitle";
             }
-            return item.html ?? "Subtitle"; // Return name for display
+            return item.html ?? "Subtitle";
           },
         },
       ],
@@ -546,7 +569,7 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         outroStart,
         outroEnd,
         validOutro,
-      } = skipTimesRef.current; // Use ref
+      } = skipTimesRef.current;
 
       const resolvedOutroEnd =
         validOutro && outroEnd === 0 && duration > 0 ? duration : outroEnd;
@@ -563,13 +586,10 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         currentTime >= outroStart &&
         currentTime < resolvedOutroEnd;
 
-      // Get the manual skip control instance *once* per update
-      const manualSkip = art.controls["manual-skip"]; // Access by name
+      const manualSkip: any = (art as any).controls["manual-skip"];
 
       if (isAutoSkipEnabled) {
-        // Auto Skip Logic
         if (manualSkip?.style?.display !== "none") {
-          // Ensure manual button is hidden
           if (manualSkip.style) manualSkip.style.display = "none";
         }
         if (inIntro && typeof introEnd === "number") {
@@ -580,23 +600,18 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
           art.seek = Math.min(seekTarget, duration);
         }
       } else {
-        // Manual Skip Button Logic
-        if (!manualSkip) return; // Guard if control not found
+        if (!manualSkip) return;
 
         if (inIntro || inOutro) {
-          // Show the button
           if (manualSkip.style?.display === "none") {
             if (manualSkip.style) manualSkip.style.display = "inline-flex";
           }
-          // Update text/tooltip
           const skipText = inIntro ? "Intro" : "Outro";
-          // Update HTML text if needed (more complex, might need querySelector)
           const textElement = manualSkip.querySelector(".art-skip-text");
           if (textElement && textElement.textContent !== `Skip ${skipText}`) {
             textElement.textContent = `Skip ${skipText}`;
           }
         } else {
-          // Hide the button
           if (manualSkip.style?.display !== "none") {
             if (manualSkip.style) manualSkip.style.display = "none";
           }
@@ -604,19 +619,17 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
       }
 
       // --- Watch Progress Tracking ---
-      // 1. Check if minimum watch time is met to potentially create record
       if (
         !hasMetMinWatchTimeRef.current &&
         currentTime >= WATCH_PROGRESS_MIN_WATCH_TIME
       ) {
         console.log("Minimum watch time met.");
         hasMetMinWatchTimeRef.current = true;
-        // Immediately sync progress if min time just met and no record exists
         if (!watchedRecordIdRef.current) {
           console.log("Triggering initial sync after min watch time.");
           syncWatchProgress(
             bookmarkIdRef.current,
-            null, // Force creation attempt
+            null,
             {
               episodeId: serversData.episodeId,
               episodeNumber: parseInt(serversData.episodeNo),
@@ -629,40 +642,37 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
               watchHistoryIdsRef.current.push(newId);
             }
           });
-          lastUpdateTimeRef.current = Date.now(); // Prevent immediate throttled update
+          lastUpdateTimeRef.current = Date.now();
         }
       }
 
-      // 2. Throttle updates if playing and min time met OR record already exists
       if (
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) &&
         Date.now() - lastUpdateTimeRef.current > WATCH_PROGRESS_UPDATE_INTERVAL
       ) {
-        // Call sync directly now, timer approach less reliable with state/refs
-        // console.log("Updating progress via interval check")
-        syncWatchProgress(bookmarkIdRef.current, watchedRecordIdRef.current, {
-          episodeId: serversData.episodeId,
-          episodeNumber: parseInt(serversData.episodeNo),
-          current: currentTime,
-          duration: duration,
-        }).then((id) => {
-          if (id) watchedRecordIdRef.current = id; // Update ref just in case
+        syncWatchProgress(
+          bookmarkIdRef.current,
+          watchedRecordIdRef.current,
+          {
+            episodeId: serversData.episodeId,
+            episodeNumber: parseInt(serversData.episodeNo),
+            current: currentTime,
+            duration: duration,
+          },
+        ).then((id) => {
+          if (id) watchedRecordIdRef.current = id;
         });
-        lastUpdateTimeRef.current = Date.now(); // Reset timer
+        lastUpdateTimeRef.current = Date.now();
       }
     };
 
-    // --- Event Listeners ---
     art.on("ready", () => {
       console.log("ArtPlayer ready. Duration:", art.duration);
-      // Adjust subtitle size initially
       art.subtitle.style({
-        fontSize: art.height * 0.04 + "px", // Adjust multiplier as needed
+        fontSize: art.height * 0.04 + "px",
       });
-      // --- SEEK TO LAST POSITION ---
+
       const seekTime = initialSeekTimeRef.current;
-      // Check if seekTime is a valid number, greater than 0,
-      // and less than the duration (minus a small buffer like 5s to avoid seeking to the very end)
       if (
         seekTime !== null &&
         seekTime > 0 &&
@@ -670,10 +680,8 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         seekTime < art.duration - 5
       ) {
         console.log(`Player ready, seeking to initial timestamp: ${seekTime}`);
-        // Optional: Add a very small delay for HLS stability if needed
         setTimeout(() => {
           if (artInstanceRef.current) {
-            // Check if instance still exists
             artInstanceRef.current.seek = seekTime;
           }
         }, 100);
@@ -682,13 +690,12 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         console.log(
           "Player ready, not seeking (no valid initial time found or near end).",
         );
-        initialSeekTimeRef.current = null; // Clear ref even if not seeking
+        initialSeekTimeRef.current = null;
       }
     });
 
     art.on("resize", () => {
-      if (!artInstanceRef.current) return; // Guard against destroyed instance
-      // Clamp font size between reasonable min/max values
+      if (!artInstanceRef.current) return;
       const newSize = Math.max(
         14,
         Math.min(32, artInstanceRef.current.height * 0.04),
@@ -703,9 +710,10 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         "Reconnect attempt:",
         reconnectTime,
       );
-      // Optionally show a user-friendly message
       if (artInstanceRef.current) {
-        artInstanceRef.current.notice.show = `Error: ${error.message || "Playback failed"}`;
+        (artInstanceRef.current as any).notice.show = `Error: ${
+          (error as any).message || "Playback failed"
+        }`;
       }
     });
 
@@ -714,17 +722,19 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
     const handleInteractionUpdate = () => {
       const art = artInstanceRef.current;
       if (!art || !art.duration || art.duration <= 0) return;
-      // Only update if min time met or record exists
       if (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) {
         console.log("Syncing progress on pause/seek.");
-        // Clear any pending throttled update
         if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
-        syncWatchProgress(bookmarkIdRef.current, watchedRecordIdRef.current, {
-          episodeId: serversData.episodeId,
-          episodeNumber: parseInt(serversData.episodeNo),
-          current: art.currentTime,
-          duration: art.duration,
-        }).then((id) => {
+        syncWatchProgress(
+          bookmarkIdRef.current,
+          watchedRecordIdRef.current,
+          {
+            episodeId: serversData.episodeId,
+            episodeNumber: parseInt(serversData.episodeNo),
+            current: art.currentTime,
+            duration: art.duration,
+          },
+        ).then((id) => {
           if (id) watchedRecordIdRef.current = id;
         });
         lastUpdateTimeRef.current = Date.now();
@@ -733,7 +743,6 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
     art.on("video:pause", handleInteractionUpdate);
     art.on("video:seeked", handleInteractionUpdate);
 
-    // --- Callback for Parent ---
     if (getInstance && typeof getInstance === "function") {
       getInstance(art);
     }
@@ -745,17 +754,20 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         artInstanceRef.current?.id,
       );
 
-      const art = artInstanceRef.current; // Get instance ref
-      const hls = hlsInstanceRef.current; // Get HLS ref
+      const art = artInstanceRef.current;
+      const hls = hlsInstanceRef.current;
 
       if (hls) {
         console.log("Cleanup: Detaching HLS media");
-        // Although hls.destroy() calls detachMedia, being explicit can sometimes help timing
         if (hls.media) {
           hls.detachMedia();
         }
         console.log("Cleanup: Destroying HLS instance.");
-        hls.destroy();
+        try {
+          hls.destroy();
+        } catch {
+          // ignore
+        }
         hlsInstanceRef.current = null;
       }
 
@@ -765,16 +777,18 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current)
       ) {
         console.log("Syncing final progress on unmount.");
-        // Use current values directly
-        syncWatchProgress(bookmarkIdRef.current, watchedRecordIdRef.current, {
-          episodeId: serversData.episodeId,
-          episodeNumber: parseInt(serversData.episodeNo),
-          current: art.currentTime,
-          duration: art.duration,
-        }); // Don't need to wait for promise here
+        syncWatchProgress(
+          bookmarkIdRef.current,
+          watchedRecordIdRef.current,
+          {
+            episodeId: serversData.episodeId,
+            episodeNumber: parseInt(serversData.episodeNo),
+            current: art.currentTime,
+            duration: art.duration,
+          },
+        );
       }
 
-      // Clear throttle timer
       if (updateTimerRef.current) {
         clearTimeout(updateTimerRef.current);
         updateTimerRef.current = null;
@@ -787,12 +801,12 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
         art.off("video:timeupdate", handleTimeUpdate);
 
         console.log("Cleanup: Pausing player");
-        art.pause(); // Explicitly pause
+        art.pause();
 
         if (art.video) {
           console.log("Cleanup: Removing video src and loading");
-          art.video.removeAttribute("src"); // Remove source
-          art.video.load(); // Force reload/reset state
+          art.video.removeAttribute("src");
+          art.video.load();
         }
 
         if (currentHlsInstanceForCleanup) {
@@ -800,23 +814,30 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
             "Cleanup: Destroying HLS instance specifically for ArtPlayer:",
             art.id,
           );
-          currentHlsInstanceForCleanup.destroy();
-          // If the global hlsInstanceRef still points to this one, nullify it.
+          try {
+            currentHlsInstanceForCleanup.destroy();
+          } catch {
+            // ignore
+          }
           if (hlsInstanceRef.current === currentHlsInstanceForCleanup) {
             hlsInstanceRef.current = null;
           }
-          currentHlsInstanceForCleanup = null; // Clear the closure variable
+          currentHlsInstanceForCleanup = null;
         } else if (hlsInstanceRef.current) {
-          // Fallback: if currentHlsInstanceForCleanup wasn't set but global one exists,
-          // it *might* be the one. This is less ideal but a safeguard.
-          // The art.on('destroy') for HLS should have ideally handled this.
           console.warn(
             "Cleanup: currentHlsInstanceForCleanup was null, attempting to destroy hlsInstanceRef.current for ArtPlayer:",
             art.id,
           );
-          hlsInstanceRef.current.destroy();
+          try {
+            hlsInstanceRef.current.destroy();
+          } catch {
+            // ignore
+          }
           hlsInstanceRef.current = null;
         }
+
+        // clear art.hls property so plugins don't hold onto stale instance
+        (art as any).hls = null;
 
         art.destroy(true);
         if (artInstanceRef.current === art) {
@@ -831,7 +852,7 @@ const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
   return (
     <div
       className={cn(
-        "relative w-full h-auto aspect-video  min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden", // Added relative and overflow-hidden
+        "relative w-full h-auto aspect-video  min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden",
         rest.className ?? "",
       )}
     >

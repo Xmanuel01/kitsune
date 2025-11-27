@@ -4,7 +4,7 @@ import { IAuthStore } from "@/store/auth-store";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import Link from "next/link";
 import { User, LogOut } from "lucide-react";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 
 type Props = {
   auth: IAuthStore;
@@ -43,10 +43,14 @@ function NavbarAvatar({ auth }: Props) {
 
           <div
             className="flex flex-row space-x-2 items-center cursor-pointer "
-            onClick={() => {
-              pb.authStore.clear();
-              auth.clearAuth();
-            }}
+            onClick={async () => {
+                try {
+                  await supabase.auth.signOut();
+                } catch (e) {
+                  console.error('Sign out error', e);
+                }
+                auth.clearAuth();
+              }}
           >
             <LogOut size="20" />
             <p>Logout</p>

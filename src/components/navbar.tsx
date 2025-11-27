@@ -17,7 +17,7 @@ import useScrollPosition from "@/hooks/use-scroll-position";
 import { Sheet, SheetClose, SheetContent, SheetTrigger } from "./ui/sheet";
 import LoginPopoverButton from "./login-popover-button";
 import { useAuthStore } from "@/store/auth-store";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import NavbarAvatar from "./navbar-avatar";
 import { toast } from "sonner";
 
@@ -44,36 +44,68 @@ const NavBar = () => {
   const isHeaderSticky = y > 0;
 
   useEffect(() => {
+    let mounted = true;
+
     const refreshAuth = async () => {
-      const auth_token = JSON.parse(
-        localStorage.getItem("pocketbase_auth") as string,
-      );
-      if (auth_token) {
-        try {
-          const user = await pb.collection("users").authRefresh();
-          if (user) {
-            auth.setAuth({
-              id: user.record.id,
-              email: user.record.email,
-              username: user.record.username,
-              avatar: user.record.avatar,
-              collectionId: user.record.collectionId,
-              collectionName: user.record.collectionName,
-              autoSkip: user.record.autoSkip,
-            });
-          }
-        } catch (e) {
-          console.error("Auth refresh error:", e);
-          localStorage.removeItem("pocketbase_auth");
-          auth.clearAuth();
-          toast.error("Login session expired.", {
-            style: { background: "red" },
+      try {
+        const res = await supabase.auth.getUser();
+        const user = res.data?.user;
+        if (user && mounted) {
+          auth.setAuth({
+            id: user.id,
+            email: user.email || "",
+            username:
+              (user.user_metadata as any)?.username ||
+              user.email?.split("@")[0] ||
+              "",
+            avatar: (user.user_metadata as any)?.avatar || "",
+            collectionId: "users",
+            collectionName: "users",
+            autoSkip: false,
           });
         }
+      } catch (e) {
+        console.error("Auth refresh error:", e);
+        auth.clearAuth();
+        toast.error("Login session expired.", {
+          style: { background: "red" },
+        });
       }
     };
+
     refreshAuth();
-  }, []);
+
+    // Supabase v2: onAuthStateChange returns { data: { subscription } }
+    const {
+      data: authListener,
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      if (event === "SIGNED_OUT") {
+        auth.clearAuth();
+      } else if (event === "SIGNED_IN" && session?.user) {
+        const u = session.user;
+        auth.setAuth({
+          id: u.id,
+          email: u.email || "",
+          username:
+            (u.user_metadata as any)?.username ||
+            u.email?.split("@")[0] ||
+            "",
+          avatar: (u.user_metadata as any)?.avatar || "",
+          collectionId: "users",
+          collectionName: "users",
+          autoSkip: false,
+        });
+      }
+    });
+
+    return () => {
+      mounted = false;
+      // Proper cleanup for Supabase v2 subscription
+      authListener?.subscription?.unsubscribe();
+    };
+  }, [auth]);
 
   return (
     <div

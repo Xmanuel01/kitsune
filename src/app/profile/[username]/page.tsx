@@ -5,7 +5,7 @@ import Avatar from "@/components/common/avatar";
 import { useAuthHydrated, useAuthStore } from "@/store/auth-store";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useRouter } from "next/navigation";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import { toast } from "sonner";
 import Image from "next/image";
 import CoverImage from "@/assets/cover.png";
@@ -39,16 +39,27 @@ function ProfilePage() {
   ) => {
     const file = event.target.files?.[0];
     if (file) {
-      const res = await pb.collection("users").update(auth.id, {
-        avatar: file,
-      });
+      const bucket = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || "public";
+      const filename = `${Date.now()}_${file.name}`;
+      const path = `users/${auth.id}/${filename}`;
 
-      if (res) {
-        setAuth({ ...auth, avatar: res.avatar });
-        toast.success("Avatar updated successfully", {
-          style: { background: "green" },
-        });
+      const { error: uploadError } = await supabase.storage.from(bucket).upload(path, file, { upsert: true });
+      if (uploadError) {
+        console.error('Upload error', uploadError);
+        toast.error('Failed to upload avatar', { style: { background: 'red' } });
+        return;
       }
+
+      // Update Supabase Auth user metadata so UI picks up the new avatar
+      const { error: updateError } = await supabase.auth.updateUser({ data: { avatar: filename } });
+      if (updateError) {
+        console.error('Update user metadata error', updateError);
+        toast.error('Failed to update avatar metadata', { style: { background: 'red' } });
+        return;
+      }
+
+      setAuth({ ...auth, avatar: filename });
+      toast.success("Avatar updated successfully", { style: { background: "green" } });
     }
   };
 

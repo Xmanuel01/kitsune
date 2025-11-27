@@ -1,20 +1,6 @@
 // src/app/api/episode/prewarm/route.ts
 import { getHiAnimeScraper } from "@/lib/hianime";
-import PocketBase from "pocketbase";
-
-const PB_BASE_URL =
-  process.env.POCKETBASE_URL ?? process.env.NEXT_PUBLIC_POCKETBASE_URL;
-
-if (!PB_BASE_URL) {
-  console.error(
-    "PocketBase misconfigured: set POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL",
-  );
-  throw new Error(
-    "PocketBase URL not configured (POCKETBASE_URL or NEXT_PUBLIC_POCKETBASE_URL)",
-  );
-}
-
-const pb = new PocketBase(PB_BASE_URL);
+import { supabaseAdmin } from "@/lib/supabaseClient";
 
 // reuse same TTL as your /episode/sources route
 const CACHE_TTL_SECONDS = 60 * 30; // 30 minutes
@@ -46,20 +32,7 @@ async function prewarmEpisodes(
       return;
     }
 
-    const adminEmail = process.env.PB_ADMIN_EMAIL;
-    const adminPassword = process.env.PB_ADMIN_PASSWORD;
-
-    if (!adminEmail || !adminPassword) {
-      console.error("PocketBase admin env missing (prewarm)", {
-        hasEmail: !!adminEmail,
-        hasPassword: !!adminPassword,
-      });
-      return;
-    }
-
-    if (!pb.authStore.isValid) {
-      await pb.admins.authWithPassword(adminEmail, adminPassword);
-    }
+    // Using Supabase Admin client (service role) — no admin email/pass required
 
     const now = Date.now();
 
@@ -69,11 +42,19 @@ async function prewarmEpisodes(
 
       const key = makeKey(episodeId, category, server);
 
-      // 1) check cache
-      const cached = await pb
-        .collection("episode_sources")
-        .getFirstListItem(`compositeKey="${key}"`)
-        .catch(() => null);
+      // 1) check Supabase cache
+      let cached = null;
+      try {
+        const { data: existing, error } = await supabaseAdmin
+          .from('episode_sources')
+          .select('*')
+          .eq('compositeKey', key)
+          .maybeSingle();
+        if (error) console.warn('Supabase select error', error.message || error);
+        cached = existing || null;
+      } catch (e) {
+        console.warn('Supabase cache read failed', e);
+      }
 
       if (cached) {
         const fetchedAtMs = cached.fetchedAt
@@ -100,11 +81,12 @@ async function prewarmEpisodes(
         fetchedAt: new Date().toISOString(),
       };
 
-      // 3) upsert in PocketBase
-      if (cached) {
-        await pb.collection("episode_sources").update(cached.id, recordPayload);
-      } else {
-        await pb.collection("episode_sources").create(recordPayload);
+      // 3) upsert in Supabase
+      try {
+        const { error } = await supabaseAdmin.from('episode_sources').upsert(recordPayload, { onConflict: 'compositeKey' });
+        if (error) console.warn('Supabase upsert error', error.message || error);
+      } catch (e) {
+        console.error('Supabase upsert failed', e);
       }
     }
   } catch (err) {

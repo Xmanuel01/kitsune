@@ -3,7 +3,7 @@ import CalendarHeatmap from "react-calendar-heatmap";
 import { WatchHistory } from "@/hooks/use-get-bookmark";
 import styles from "../heatmap.module.css";
 import { useAuthStore } from "@/store/auth-store";
-import { pb } from "@/lib/pocketbase";
+import { supabase } from "@/lib/supabaseClient";
 import { toast } from "sonner";
 import { Tooltip } from "react-tooltip";
 
@@ -30,16 +30,16 @@ function AnimeHeatmap() {
     if (!auth?.id) return; // Need authenticated user ID
 
     try {
-      // 1. Get all bookmark records for the user
-      const bookmarkRecords = await pb
-        .collection<BookmarkData>("bookmarks")
-        .getFullList({
-          filter: `user = "${auth.id}"`,
-          fields: "watchHistory", // Only fetch the relation IDs needed
-        });
+      // 1. Get all bookmark records for the user (only watchHistory field)
+      const { data: bookmarkRecords, error: bookmarksError } = await supabase
+        .from('bookmarks')
+        .select('watchHistory')
+        .eq('user', auth.id);
+
+      if (bookmarksError) throw bookmarksError;
 
       if (!bookmarkRecords || bookmarkRecords.length === 0) {
-        console.log("No bookmarks found for user.");
+        console.log('No bookmarks found for user.');
         setHeatmapData([]);
         setTotalContributionCount(0);
         return;
@@ -47,14 +47,10 @@ function AnimeHeatmap() {
 
       // 2. Collect all unique watched record IDs from all bookmarks
       const watchedRecordIds = bookmarkRecords.reduce(
-        (acc: string[], bookmark) => {
-          // Ensure watchHistory is an array and add its IDs to accumulator
+        (acc: string[], bookmark: any) => {
           if (Array.isArray(bookmark.watchHistory)) {
-            bookmark.watchHistory.forEach((id) => {
-              if (!acc.includes(id)) {
-                // Add only unique IDs
-                acc.push(id);
-              }
+            bookmark.watchHistory.forEach((id: string) => {
+              if (!acc.includes(id)) acc.push(id);
             });
           }
           return acc;
@@ -68,43 +64,30 @@ function AnimeHeatmap() {
         return;
       }
 
-      const watchedFilter = watchedRecordIds
-        .map((id) => `id = "${id}"`)
-        .join(" || ");
-
       try {
         // 4. Fetch all corresponding 'watched' records
-        const watchedRecords = await pb
-          .collection<WatchHistory>("watched")
-          .getFullList({
-            filter: watchedFilter,
-            fields: "created", // Only need the creation date
-          });
+        const { data: watchedRecords, error: watchedError } = await supabase
+          .from('watched')
+          .select('created')
+          .in('id', watchedRecordIds);
+
+        if (watchedError) throw watchedError;
+
         const dailyCounts: { [key: string]: number } = {};
         let totalCount = 0;
 
-        watchedRecords.forEach((record) => {
-          const dateStr = record.created.substring(0, 10); // Extracts "YYYY-MM-DD"
-
-          if (dailyCounts[dateStr]) {
-            dailyCounts[dateStr] += 1;
-          } else {
-            dailyCounts[dateStr] = 1;
-          }
+        (watchedRecords || []).forEach((record: any) => {
+          const dateStr = record.created.substring(0, 10);
+          dailyCounts[dateStr] = (dailyCounts[dateStr] || 0) + 1;
           totalCount += 1;
         });
 
-        const formattedData = Object.entries(dailyCounts).map(
-          ([date, count]) => ({
-            date,
-            count,
-          }),
-        );
+        const formattedData = Object.entries(dailyCounts).map(([date, count]) => ({ date, count }));
 
         setHeatmapData(formattedData);
         setTotalContributionCount(totalCount);
       } catch (error) {
-        console.error("Error fetching watched records:", error);
+        console.error('Error fetching watched records:', error);
       }
     } catch (error) {
       console.error("Error fetching or aggregating watch history:", error);
