@@ -1,8 +1,9 @@
 // src/app/api/episode/sources/route.ts
+
 import { getHiAnimeScraper } from "@/lib/hianime";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
-// Cache TTL: 30 minutes (change if you want)
+// Cache TTL: 30 minutes
 const CACHE_TTL_SECONDS = 60 * 30;
 
 const makeKey = (episodeId: string, category: string, server: string) =>
@@ -36,7 +37,7 @@ export async function GET(req: Request) {
     const category: "sub" | "dub" | "raw" = categoryParam || "sub";
     const server = serverParam || "hd-1";
 
-    console.debug("GET /api/episode/sources params:", {
+    console.debug("[EPISODE_SOURCES] incoming params:", {
       episodeIdRaw,
       episodeId,
       category,
@@ -63,12 +64,15 @@ export async function GET(req: Request) {
         .maybeSingle();
 
       if (error) {
-        console.warn('Supabase select error', error.message || error);
+        console.warn(
+          "[EPISODE_SOURCES] Supabase select error:",
+          error.message || error,
+        );
       } else if (existing) {
         cached = existing;
       }
     } catch (err) {
-      console.warn("Supabase cache read failed", err);
+      console.warn("[EPISODE_SOURCES] Supabase cache read failed:", err);
     }
 
     if (cached && cached.data) {
@@ -78,14 +82,25 @@ export async function GET(req: Request) {
       const ageSeconds = (now - fetchedAtMs) / 1000;
 
       if (ageSeconds < CACHE_TTL_SECONDS) {
+        console.debug(
+          "[EPISODE_SOURCES] returning cached data",
+          compositeKey,
+          `age=${ageSeconds}s`,
+        );
         return Response.json({ data: cached.data, fromCache: true });
+      } else {
+        console.debug(
+          "[EPISODE_SOURCES] cache expired, refetching",
+          compositeKey,
+          `age=${ageSeconds}s`,
+        );
       }
     }
 
     // 2) Scrape fresh data
     const scraper = await getHiAnimeScraper();
     if (!scraper) {
-      console.error("HiAnime scraper unavailable");
+      console.error("[EPISODE_SOURCES] HiAnime scraper unavailable");
       return Response.json({ error: "scraper unavailable" }, { status: 503 });
     }
 
@@ -93,7 +108,7 @@ export async function GET(req: Request) {
     try {
       data = await scraper.getEpisodeSources(episodeId, undefined, category);
     } catch (scrapeErr: any) {
-      console.error("Error during scraper.getEpisodeSources:", {
+      console.error("[EPISODE_SOURCES] scraper.getEpisodeSources error:", {
         episodeId,
         category,
         server,
@@ -119,17 +134,31 @@ export async function GET(req: Request) {
 
     try {
       const { error } = await supabaseAdmin
-        .from('episode_sources')
-        .upsert(recordPayload, { onConflict: 'compositeKey' });
-      if (error) console.warn('Supabase upsert error', error.message || error);
+        .from("episode_sources")
+        .upsert(recordPayload, { onConflict: "compositeKey" });
+
+      if (error) {
+        console.warn(
+          "[EPISODE_SOURCES] Supabase upsert error:",
+          error.message || error,
+        );
+      } else {
+        console.debug("[EPISODE_SOURCES] cache upserted:", compositeKey);
+      }
     } catch (err) {
-      console.error("Failed to upsert episode_sources into Supabase:", err);
-      // still return data to the client even if cache save fails
+      console.error(
+        "[EPISODE_SOURCES] Failed to upsert episode_sources into Supabase:",
+        err,
+      );
+      // still return data even if cache save fails
     }
 
     return Response.json({ data, fromCache: false });
-  } catch (err) {
-    console.error("EPISODE SOURCE ERROR:", err);
+  } catch (err: any) {
+    console.error("[EPISODE_SOURCES] API Error:", {
+      message: err?.message,
+      stack: err?.stack,
+    });
     return Response.json({ error: "something went wrong" }, { status: 500 });
   }
 }

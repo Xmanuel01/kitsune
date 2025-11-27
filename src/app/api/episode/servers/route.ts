@@ -1,10 +1,15 @@
+// src/app/api/episode/servers/route.ts
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const animeEpisodeIdRaw = searchParams.get("animeEpisodeId");
 
     if (!animeEpisodeIdRaw) {
-      return Response.json({ error: "animeEpisodeId is required" }, { status: 400 });
+      return Response.json(
+        { error: "animeEpisodeId is required" },
+        { status: 400 }
+      );
     }
 
     // Sanitize incoming id: decode if needed and only allow base + optional '?ep=digits'
@@ -13,8 +18,8 @@ export async function GET(req: Request) {
       let decoded = String(raw);
       try {
         decoded = decodeURIComponent(raw);
-      } catch (e) {
-        // ignore
+      } catch {
+        // ignore bad encodings
       }
       const m = decoded.match(/^([^?]+)(\?ep=(\d+))?/);
       if (!m) return decoded.split("?")[0];
@@ -25,15 +30,26 @@ export async function GET(req: Request) {
 
     const mod = await import("@/lib/hianime");
     const { hianime } = mod;
+
     if (!hianime) {
-      console.error("HiAnime scraper unavailable");
-      return Response.json({ error: "scraper unavailable" }, { status: 503 });
+      console.error("[EPISODE_SERVERS] HiAnime scraper unavailable");
+      return Response.json(
+        { error: "scraper unavailable" },
+        { status: 503 }
+      );
     }
 
     const data = await hianime.getEpisodeServers(animeEpisodeId);
+
     return Response.json({ data });
-  } catch (err) {
-    console.error("API Error:", err);
-    return Response.json({ error: "something went wrong" }, { status: 500 });
+  } catch (err: any) {
+    console.error("[EPISODE_SERVERS] API Error:", {
+      message: err?.message,
+      stack: err?.stack,
+    });
+    return Response.json(
+      { error: "something went wrong" },
+      { status: 500 }
+    );
   }
 }
