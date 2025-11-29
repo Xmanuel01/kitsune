@@ -1,7 +1,7 @@
 import withPWA from "next-pwa";
 
 /** @type {import('next').NextConfig} */
-const nextConfig = {
+const baseConfig = {
   output: "standalone",
   reactStrictMode: true,
   images: {
@@ -12,8 +12,30 @@ const nextConfig = {
       },
     ],
   },
-  // Correct Turbopack config for Next 16
-  turbopack: {}, 
+  turbopack: {},
+
+  // This is the important part
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      const path = require("path");
+      const aliasTarget = path.resolve("./src/server-shims/empty.js");
+
+      config.resolve = config.resolve || {};
+      config.resolve.alias = config.resolve.alias || {};
+
+      Object.assign(config.resolve.alias, {
+        "thread-stream": aliasTarget,
+        tap: aliasTarget,
+        desm: aliasTarget,
+        "fastbench": aliasTarget,
+        "pino-elasticsearch": aliasTarget,
+        "why-is-node-running": aliasTarget,
+        "sonic-boom": aliasTarget,
+        "pino-tee": aliasTarget,
+      });
+    }
+    return config;
+  },
 };
 
 export default withPWA({
@@ -21,27 +43,4 @@ export default withPWA({
   register: true,
   skipWaiting: true,
   disable: process.env.NODE_ENV === "development",
-})(nextConfig);
-
-// Webpack aliases for server-side only to stub test/dev-only modules that
-// some dependencies (e.g. `thread-stream`) include in their package tree.
-// These imports are not required at runtime in production for our app and
-// cause Turbopack to fail when it encounters test files and unknown types.
-// The alias is applied only on server builds via the `webpack` function.
-export const webpack = (config, { isServer }) => {
-  if (isServer && config && config.resolve && config.resolve.alias) {
-    const path = require('path');
-    const aliasTarget = path.resolve('./src/server-shims/empty.js');
-    Object.assign(config.resolve.alias, {
-      'thread-stream': aliasTarget,
-      'tap': aliasTarget,
-      'desm': aliasTarget,
-      'fastbench': aliasTarget,
-      'pino-elasticsearch': aliasTarget,
-      'why-is-node-running': aliasTarget,
-      'sonic-boom': aliasTarget,
-      'pino-tee': aliasTarget,
-    });
-  }
-  return config;
-};
+})(baseConfig);

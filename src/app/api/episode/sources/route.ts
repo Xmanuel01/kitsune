@@ -3,6 +3,8 @@
 import { getHiAnimeScraper } from "@/lib/hianime";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
+export const runtime = "nodejs"; // important: aniwatch uses worker_threads, needs Node runtime
+
 // Cache TTL: 30 minutes
 const CACHE_TTL_SECONDS = 60 * 30;
 
@@ -11,12 +13,15 @@ const makeKey = (episodeId: string, category: string, server: string) =>
 
 const sanitize = (raw?: string | null) => {
   if (!raw) return null;
+
   let decoded = String(raw);
   try {
     decoded = decodeURIComponent(raw);
   } catch {
-    // ignore decode errors
+    // ignore decode errors (already decoded or malformed)
   }
+
+  // Keep base id + optional ?ep=123; strip anything else
   const m = decoded.match(/^([^?]+)(\?ep=(\d+))?/);
   if (!m) return decoded.split("?")[0];
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
@@ -106,7 +111,9 @@ export async function GET(req: Request) {
 
     let data: any;
     try {
-      data = await scraper.getEpisodeSources(episodeId, undefined, category);
+      // IMPORTANT: pass server + category to match aniwatch signature:
+      // getEpisodeSources(id, server?, category?)
+      data = await scraper.getEpisodeSources(episodeId, server, category);
     } catch (scrapeErr: any) {
       console.error("[EPISODE_SOURCES] scraper.getEpisodeSources error:", {
         episodeId,
@@ -150,7 +157,7 @@ export async function GET(req: Request) {
         "[EPISODE_SOURCES] Failed to upsert episode_sources into Supabase:",
         err,
       );
-      // still return data even if cache save fails
+      // Still return data even if cache save fails
     }
 
     return Response.json({ data, fromCache: false });

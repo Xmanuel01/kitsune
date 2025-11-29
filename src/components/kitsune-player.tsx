@@ -8,17 +8,14 @@ import React, {
   HTMLAttributes,
 } from "react";
 import Artplayer from "artplayer";
-// Minimal typing so TS is happy
 type Option = any;
 
 import Hls from "hls.js";
 
-// Helper functions and types (keep or import from your types file)
-import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes"; // Adjust path as needed
-import loadingImage from "@/assets/genkai.gif"; // Adjust path as needed
+import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
+import loadingImage from "@/assets/genkai.gif";
 import artplayerPluginHlsControl from "artplayer-plugin-hls-control";
 import artplayerPluginAmbilight from "artplayer-plugin-ambilight";
-import { env } from "next-runtime-env"; // Ensure this works in client components or pass env vars differently
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 import useBookMarks from "@/hooks/use-get-bookmark";
@@ -28,13 +25,16 @@ import Image from "next/image";
 const WATCH_PROGRESS_UPDATE_INTERVAL = 10000; // Update every 10 seconds
 const WATCH_PROGRESS_MIN_WATCH_TIME = 10; // Min seconds watched to create record
 
+// All proxying now goes through Vercel API route
+const proxyBaseURI = "/api/m3u8";
+
 // --- Define Props for the Combined Player ---
 interface ArtPlayerProps extends HTMLAttributes<HTMLDivElement> {
-  episodeInfo: IEpisodeSource; // Source info including URLs, tracks, intro/outro
-  animeInfo: { title: string; image: string; id: string }; // Basic anime info for poster etc.
-  subOrDub: "sub" | "dub"; // Use literal type for clarity
-  episodes?: IEpisodes; // Optional: If needed for playlist features later
-  getInstance?: (art: Artplayer) => void; // Callback to get the instance
+  episodeInfo: IEpisodeSource;
+  animeInfo: { title: string; image: string; id: string };
+  subOrDub: "sub" | "dub";
+  episodes?: IEpisodes;
+  getInstance?: (art: Artplayer) => void;
   autoSkip?: boolean;
   serversData: IEpisodeServers;
 }
@@ -49,7 +49,7 @@ const generateHighlights = (
   end: number | undefined | null,
   label: string,
 ): HighlightPoint[] => {
-  if (start == null || end == null || start >= end) return []; // Use >= to avoid single-second highlights
+  if (start == null || end == null || start >= end) return [];
   const highlights: HighlightPoint[] = [];
   for (let time = Math.floor(start); time <= Math.floor(end); time++) {
     highlights.push({ time, text: label });
@@ -57,7 +57,6 @@ const generateHighlights = (
   return highlights;
 };
 
-// --- The Combined ArtPlayer Component ---
 function KitsunePlayer({
   episodeInfo,
   animeInfo,
@@ -66,21 +65,20 @@ function KitsunePlayer({
   autoSkip = true,
   serversData,
   episodes,
-  ...rest // Spread other div attributes like className, id, etc.
+  ...rest
 }: ArtPlayerProps): JSX.Element {
-  const artContainerRef = useRef<HTMLDivElement>(null); // Ref for the mounting div
-  const artInstanceRef = useRef<Artplayer | null>(null); // Ref for the ArtPlayer instance
-  const hlsInstanceRef = useRef<Hls | null>(null); // Ref for the Hls.js instance
+  const artContainerRef = useRef<HTMLDivElement>(null);
+  const artInstanceRef = useRef<Artplayer | null>(null);
+  const hlsInstanceRef = useRef<Hls | null>(null);
 
-  // State only needed for the current auto-skip setting
   const [isAutoSkipEnabled, setIsAutoSkipEnabled] = useState(autoSkip);
 
   const bookmarkIdRef = useRef<string | null>(null);
-  const watchHistoryIdsRef = useRef<string[]>([]); // Store initial list
+  const watchHistoryIdsRef = useRef<string[]>([]);
   const watchedRecordIdRef = useRef<string | null>(null);
   const updateTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
-  const hasMetMinWatchTimeRef = useRef<boolean>(false); // Track if min time met for this episode
+  const hasMetMinWatchTimeRef = useRef<boolean>(false);
   const initialSeekTimeRef = useRef<number | null>(null);
 
   const { auth } = useAuthStore();
@@ -92,8 +90,8 @@ function KitsunePlayer({
     setIsAutoSkipEnabled(autoSkip);
   }, [autoSkip]);
 
+  // Prewarm next episodes
   useEffect(() => {
-    // we need a list of episodes and the current one
     if (!episodes) return;
     if (!serversData?.episodeId) return;
 
@@ -111,7 +109,6 @@ function KitsunePlayer({
 
     if (idx === -1) return;
 
-    // pick the next 5 episodes to prewarm
     const nextEpisodes: string[] = epsArray
       .slice(idx + 1, idx + 1 + 5)
       .map((ep: any) => ep.id ?? ep.episodeId ?? ep.slug)
@@ -125,14 +122,11 @@ function KitsunePlayer({
       body: JSON.stringify({
         episodeIds: nextEpisodes,
         category: subOrDub ?? "sub",
-        // server: serversData?.server ?? "hd-1", // if/when you add server support there
       }),
     }).catch((err) => console.error("prewarm error:", err));
   }, [episodes, serversData?.episodeId, subOrDub]);
 
-  const proxyBaseURI = `${env("NEXT_PUBLIC_PROXY_URL")}/fetch`;
-
-  // --- Construct Proxy URI ---
+  // --- Construct proxied video URI using Vercel API route ---
   const uri = useMemo(() => {
     const firstSourceUrl = episodeInfo?.sources?.[0]?.url;
     const referer = episodeInfo?.headers?.Referer;
@@ -146,7 +140,7 @@ function KitsunePlayer({
       console.error("Error constructing proxy URI:", error);
       return null;
     }
-  }, [episodeInfo, proxyBaseURI]);
+  }, [episodeInfo]);
 
   const skipTimesRef = useRef<{
     introStart?: number;
@@ -157,9 +151,9 @@ function KitsunePlayer({
     validOutro: boolean;
   }>({ validIntro: false, validOutro: false });
 
+  // Bookmark + watch history loading
   useEffect(() => {
     if (!auth || !animeInfo.id || !serversData.episodeId) {
-      // Reset refs if critical info is missing
       bookmarkIdRef.current = null;
       watchedRecordIdRef.current = null;
       watchHistoryIdsRef.current = [];
@@ -168,7 +162,7 @@ function KitsunePlayer({
       return;
     }
 
-    let isMounted = true; // Track mount status for async operations
+    let isMounted = true;
 
     const fetchBookmarkAndWatchedId = async () => {
       const id = await createOrUpdateBookMark(
@@ -180,7 +174,7 @@ function KitsunePlayer({
       );
 
       if (!isMounted || !id) {
-        bookmarkIdRef.current = null; // Clear if failed or unmounted
+        bookmarkIdRef.current = null;
         watchedRecordIdRef.current = null;
         watchHistoryIdsRef.current = [];
         initialSeekTimeRef.current = null;
@@ -189,9 +183,8 @@ function KitsunePlayer({
       }
 
       bookmarkIdRef.current = id;
-      hasMetMinWatchTimeRef.current = false; // Reset min watch time check
+      hasMetMinWatchTimeRef.current = false;
 
-      // Now find the specific watched record ID for THIS episode
       try {
         const { data: expandedBookmark, error: bookmarkError } = await supabase
           .from("bookmarks")
@@ -199,10 +192,7 @@ function KitsunePlayer({
           .eq("id", id)
           .maybeSingle();
 
-        if (bookmarkError) {
-          throw bookmarkError;
-        }
-
+        if (bookmarkError) throw bookmarkError;
         if (!isMounted) return;
 
         let history: any[] = [];
@@ -224,6 +214,7 @@ function KitsunePlayer({
             history = (expandedBookmark.expand as any).watchHistory;
           }
         }
+
         const existingWatched = history.find(
           (watched: any) => watched.episodeId === serversData.episodeId,
         );
@@ -265,11 +256,9 @@ function KitsunePlayer({
     createOrUpdateBookMark,
   ]);
 
-  // --- Effect for Player Initialization and Cleanup ---
+  // --- Player Init + Cleanup ---
   useEffect(() => {
-    // Wait for container ref and valid URI
     if (!artContainerRef.current || !uri) {
-      // Clean up previous instances if URI becomes invalid or ref detach
       if (hlsInstanceRef.current) {
         hlsInstanceRef.current.destroy();
         hlsInstanceRef.current = null;
@@ -281,7 +270,6 @@ function KitsunePlayer({
       return;
     }
 
-    // Make sure start/end are valid numbers before creating range
     const introStart = episodeInfo?.intro?.start;
     const introEnd = episodeInfo?.intro?.end;
     skipTimesRef.current.validIntro =
@@ -301,12 +289,15 @@ function KitsunePlayer({
     skipTimesRef.current.outroEnd = outroEnd;
 
     const refererValue = episodeInfo?.headers?.Referer;
-    const refParam = refererValue ? `&ref=${encodeURIComponent(refererValue)}` : "";
+    const refParam = refererValue
+      ? `&ref=${encodeURIComponent(refererValue)}`
+      : "";
 
+    // Note: here we store raw track.url and build proxied URL when switching
     const trackOptions: any = (episodeInfo?.tracks ?? []).map((track) => ({
       default: track.lang === "English",
       html: track.lang,
-      url: `${proxyBaseURI}?url=${encodeURIComponent(track.url)}${refParam}`,
+      url: track.url as string,
     }));
 
     const defaultTrack = episodeInfo?.tracks?.find(
@@ -316,11 +307,11 @@ function KitsunePlayer({
     const subtitleConfig: Option["subtitle"] =
       subOrDub === "sub"
         ? {
-            url: `${
-              defaultTrack
-                ? `${proxyBaseURI}?url=${encodeURIComponent(defaultTrack)}${refParam}`
-                : ""
-            }`,
+            url: defaultTrack
+              ? `${proxyBaseURI}?url=${encodeURIComponent(
+                  defaultTrack,
+                )}${refParam}`
+              : "",
             type: "vtt",
             style: {
               color: "#FFFFFF",
@@ -336,12 +327,16 @@ function KitsunePlayer({
       name: "manual-skip",
       position: "right",
       html: `
-                <div style="display: flex; align-items: center; gap: 4px; padding: 0 6px;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/></svg>
-                    <span class="art-skip-text">Skip</span>
-                </div>
-            `,
+        <div style="display: flex; align-items: center; gap: 4px; padding: 0 6px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+               viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+               <polygon points="5 4 15 12 5 20 5 4"/>
+               <line x1="19" x2="19" y1="5" y2="19"/>
+          </svg>
+          <span class="art-skip-text">Skip</span>
+        </div>
+      `,
       tooltip: "Skip",
       style: {
         display: "none",
@@ -390,7 +385,6 @@ function KitsunePlayer({
 
     let currentHlsInstanceForCleanup: Hls | null = null;
 
-    // Combine All Options
     const finalOptions: Option = {
       container: artContainerRef.current,
       url: uri,
@@ -402,7 +396,6 @@ function KitsunePlayer({
           artPlayerInstance: Artplayer,
         ) => {
           if (Hls.isSupported()) {
-            // Destroy previous HLS instance if attached to this player
             if (hlsInstanceRef.current) {
               try {
                 hlsInstanceRef.current.destroy();
@@ -419,7 +412,6 @@ function KitsunePlayer({
             hlsInstanceRef.current = hls;
             currentHlsInstanceForCleanup = hls;
 
-            // 🔴 expose to plugins: art.hls is what artplayer-plugin-hls-control expects
             (artPlayerInstance as any).hls = hls;
 
             artPlayerInstance.on("destroy", () => {
@@ -493,12 +485,12 @@ function KitsunePlayer({
           ],
           onSelect: function (item: any) {
             if (item.url && typeof item.url === "string") {
-              art.subtitle.switch(
-                `${proxyBaseURI}?url=${item.url}${refParam}`,
-                {
-                  name: item.html,
-                },
-              );
+              const proxiedTrackUrl = `${proxyBaseURI}?url=${encodeURIComponent(
+                item.url,
+              )}${refParam}`;
+              art.subtitle.switch(proxiedTrackUrl, {
+                name: item.html,
+              });
               return item.html ?? "Subtitle";
             }
             return item.html ?? "Subtitle";
@@ -550,12 +542,10 @@ function KitsunePlayer({
       },
     };
 
-    // --- Initialize ArtPlayer ---
     console.log(finalOptions);
     const art = new Artplayer(finalOptions);
     artInstanceRef.current = art;
 
-    // --- Skip Logic Handler ---
     const handleTimeUpdate = () => {
       const art = artInstanceRef.current;
       if (!art || art.loading.show) return;
@@ -618,7 +608,7 @@ function KitsunePlayer({
         }
       }
 
-      // --- Watch Progress Tracking ---
+      // Watch progress
       if (
         !hasMetMinWatchTimeRef.current &&
         currentTime >= WATCH_PROGRESS_MIN_WATCH_TIME
@@ -627,16 +617,12 @@ function KitsunePlayer({
         hasMetMinWatchTimeRef.current = true;
         if (!watchedRecordIdRef.current) {
           console.log("Triggering initial sync after min watch time.");
-          syncWatchProgress(
-            bookmarkIdRef.current,
-            null,
-            {
-              episodeId: serversData.episodeId,
-              episodeNumber: parseInt(serversData.episodeNo),
-              current: currentTime,
-              duration: duration,
-            },
-          ).then((newId) => {
+          syncWatchProgress(bookmarkIdRef.current, null, {
+            episodeId: serversData.episodeId,
+            episodeNumber: parseInt(serversData.episodeNo),
+            current: currentTime,
+            duration: duration,
+          }).then((newId) => {
             if (newId) {
               watchedRecordIdRef.current = newId;
               watchHistoryIdsRef.current.push(newId);
@@ -740,6 +726,7 @@ function KitsunePlayer({
         lastUpdateTimeRef.current = Date.now();
       }
     };
+
     art.on("video:pause", handleInteractionUpdate);
     art.on("video:seeked", handleInteractionUpdate);
 
@@ -747,7 +734,7 @@ function KitsunePlayer({
       getInstance(art);
     }
 
-    // --- Cleanup Function ---
+    // Cleanup
     return () => {
       console.log(
         "Running cleanup for ArtPlayer instance:",
@@ -836,7 +823,6 @@ function KitsunePlayer({
           hlsInstanceRef.current = null;
         }
 
-        // clear art.hls property so plugins don't hold onto stale instance
         (art as any).hls = null;
 
         art.destroy(true);
@@ -863,8 +849,8 @@ function KitsunePlayer({
             style={{ backgroundImage: `url(${animeInfo.image})` }}
           >
             <Image
-              width="60"
-              height="60"
+              width={60}
+              height={60}
               src={loadingImage.src}
               alt="Loading..."
             />
