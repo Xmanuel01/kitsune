@@ -4,6 +4,7 @@ import { getHiAnimeScraper } from "@/lib/hianime";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
 export const runtime = "nodejs"; // important: aniwatch uses worker_threads, needs Node runtime
+export const dynamic = "force-dynamic";
 
 // Cache TTL: 30 minutes
 const CACHE_TTL_SECONDS = 60 * 30;

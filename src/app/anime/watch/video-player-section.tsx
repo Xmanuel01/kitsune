@@ -1,3 +1,5 @@
+// C:\Users\USER\Documents\kitsune\src\app\anime\watch\video-player-section.tsx
+
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -15,7 +17,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { supabase } from "@/lib/supabaseClient";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
-const VideoPlayerSection = () => {
+const VideoPlayerSection: React.FC = () => {
   const { selectedEpisode, anime } = useAnimeStore();
 
   const { data: serversData } = useGetEpisodeServers(selectedEpisode);
@@ -24,11 +26,20 @@ const VideoPlayerSection = () => {
   const [key, setKey] = useState<string>("");
 
   const { auth, setAuth } = useAuthStore();
-  const [autoSkip, setAutoSkip] = useState<boolean>(
-    auth?.autoSkip || Boolean(localStorage.getItem("autoSkip")) || false,
-  );
 
+  const [autoSkip, setAutoSkip] = useState<boolean>(() => {
+    try {
+      if (auth?.autoSkip !== undefined) return auth.autoSkip;
+      const stored = localStorage.getItem("autoSkip");
+      return stored ? JSON.parse(stored) : false;
+    } catch {
+      return false;
+    }
+  });
+
+  // Safely derive serverName/key from serversData
   useEffect(() => {
+    if (!serversData) return;
     const { serverName, key } = getFallbackServer(serversData);
     setServerName(serverName);
     setKey(key);
@@ -41,46 +52,65 @@ const VideoPlayerSection = () => {
   );
 
   const [watchedDetails, setWatchedDetails] = useState<Array<IWatchedAnime>>(
-    JSON.parse(localStorage.getItem("watched") as string) || [],
+    () => {
+      try {
+        const raw = localStorage.getItem("watched");
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    },
   );
 
-  function changeServer(serverName: string, key: string) {
-    setServerName(serverName);
-    setKey(key);
-    const preference = { serverName, key };
-    localStorage.setItem("serverPreference", JSON.stringify(preference));
+  function changeServer(nextServerName: string, nextKey: string) {
+    setServerName(nextServerName);
+    setKey(nextKey);
+    try {
+      const preference = { serverName: nextServerName, key: nextKey };
+      localStorage.setItem("serverPreference", JSON.stringify(preference));
+    } catch {
+      // ignore storage errors
+    }
   }
 
   async function onHandleAutoSkipChange(value: boolean) {
     setAutoSkip(value);
     if (!auth) {
-      localStorage.setItem("autoSkip", JSON.stringify(value));
+      try {
+        localStorage.setItem("autoSkip", JSON.stringify(value));
+      } catch {
+        // ignore
+      }
       return;
     }
     // Persist preference to user metadata in Supabase Auth
-    const { error } = await supabase.auth.updateUser({ data: { autoSkip: value } });
+    const { error } = await supabase.auth.updateUser({
+      data: { autoSkip: value },
+    });
     if (!error) {
       setAuth({ ...auth, autoSkip: value });
     } else {
-      console.error('Failed updating autoSkip metadata', error);
+      console.error("Failed updating autoSkip metadata", error);
     }
   }
 
   useEffect(() => {
     if (auth) return;
+
     if (!Array.isArray(watchedDetails)) {
       localStorage.removeItem("watched");
       return;
     }
 
-    if (episodeData) {
+    if (episodeData && anime?.anime?.info?.id) {
       const existingAnime = watchedDetails.find(
         (watchedAnime) => watchedAnime.anime.id === anime.anime.info.id,
       );
 
       if (!existingAnime) {
-        // Add new anime entry if it doesn't exist
-        const updatedWatchedDetails = [
+        const updatedWatchedDetails: IWatchedAnime[] = [
           ...watchedDetails,
           {
             anime: {
@@ -94,19 +124,21 @@ const VideoPlayerSection = () => {
         localStorage.setItem("watched", JSON.stringify(updatedWatchedDetails));
         setWatchedDetails(updatedWatchedDetails);
       } else {
-        // Update the existing anime entry
         const episodeAlreadyWatched =
           existingAnime.episodes.includes(selectedEpisode);
 
         if (!episodeAlreadyWatched) {
-          // Add the new episode to the list
-          const updatedWatchedDetails = watchedDetails.map((watchedAnime) =>
-            watchedAnime.anime.id === anime.anime.info.id
-              ? {
-                  ...watchedAnime,
-                  episodes: [...watchedAnime.episodes, selectedEpisode],
-                }
-              : watchedAnime,
+          const updatedWatchedDetails: IWatchedAnime[] = watchedDetails.map(
+            (watchedAnime) =>
+              watchedAnime.anime.id === anime.anime.info.id
+                ? {
+                    ...watchedAnime,
+                    episodes: [
+                      ...watchedAnime.episodes,
+                      selectedEpisode,
+                    ],
+                  }
+                : watchedAnime,
           );
 
           localStorage.setItem(
@@ -117,47 +149,74 @@ const VideoPlayerSection = () => {
         }
       }
     }
-    //eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeData, selectedEpisode, auth]);
 
-  if (isLoading || !episodeData)
+  // Normal loading skeleton
+  if (isLoading || !episodeData) {
     return (
-      <div className="h-auto aspect-video lg:max-h-[calc(100vh-150px)] min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] w-full animate-pulse bg-slate-700 rounded-md"></div>
+      <div className="h-auto aspect-video lg:max-h-[calc(100vh-150px)] min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] w-full animate-pulse bg-slate-700 rounded-md" />
     );
+  }
 
-  return !episodeData || episodeData?.sources.length === 0 ? (
-    <>
-      <div
-        className={
-          "relative w-full h-auto aspect-video  min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidde  n p-4"
-        }
-      >
-        <iframe
-          src={`https://megaplay.buzz/stream/s-2/${serversData?.episodeId.split("?ep=")[1]}/sub`}
-          width="100%"
-          height="100%"
-          allowFullScreen
-        ></iframe>
-      </div>
-      <div className="mt-4">
-        <Alert variant="destructive" className="text-red-400">
-          <AlertTitle className="font-bold flex items-center space-x-2">
-            <AlertCircleIcon size="20" />
-            <p>Fallback Video Player Activated</p>
-          </AlertTitle>
-          <AlertDescription>
-            The original video source for this episode is currently unavailable.
-            A fallback player has been provided for your convenience. We
-            recommend using an ad blocker for a smoother viewing experience.
-          </AlertDescription>
-        </Alert>
-      </div>
-    </>
-  ) : (
+  // Safely derive arrays
+  const sources = episodeData?.sources ?? [];
+  const subServers = serversData?.sub ?? [];
+  const dubServers = serversData?.dub ?? [];
+  const hasDub = dubServers.length > 0;
+
+  // Extract ?ep=... safely for fallback iframe
+  const episodeIdRaw = serversData?.episodeId;
+  const epParam =
+    typeof episodeIdRaw === "string" && episodeIdRaw.includes("?ep=")
+      ? episodeIdRaw.split("?ep=")[1]
+      : undefined;
+
+  // If no sources, use fallback iframe
+  if (!sources.length) {
+    return (
+      <>
+        <div
+          className={
+            "relative w-full h-auto aspect-video  min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden p-4"
+          }
+        >
+          {epParam ? (
+            <iframe
+              src={`https://megaplay.buzz/stream/s-2/${epParam}/sub`}
+              width="100%"
+              height="100%"
+              allowFullScreen
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-sm text-slate-200">
+              Episode source is temporarily unavailable. Please try again later.
+            </div>
+          )}
+        </div>
+        <div className="mt-4">
+          <Alert variant="destructive" className="text-red-400">
+            <AlertTitle className="font-bold flex items-center space-x-2">
+              <AlertCircleIcon size={20} />
+              <p>Fallback Video Player Activated</p>
+            </AlertTitle>
+            <AlertDescription>
+              The original video source for this episode is currently
+              unavailable. A fallback player has been provided for your
+              convenience. We recommend using an ad blocker for a smoother
+              viewing experience.
+            </AlertDescription>
+          </Alert>
+        </div>
+      </>
+    );
+  }
+
+  return (
     <div>
       <KitsunePlayer
-        key={episodeData?.sources?.[0].url}
-        episodeInfo={episodeData!}
+        key={sources[0]?.url ?? ""}
+        episodeInfo={episodeData}
         serversData={serversData!}
         animeInfo={{
           id: anime.anime.info.id,
@@ -167,31 +226,41 @@ const VideoPlayerSection = () => {
         subOrDub={key as "sub" | "dub"}
         autoSkip={autoSkip}
       />
-      <div className="flex flex-row bg-[#0f172a]  items-start justify-between w-full p-5">
+
+      <div className="flex flex-row bg-[#0f172a] items-start justify-between w-full p-5">
         <div>
           <div className="flex flex-row items-center space-x-5">
             <Captions className="text-red-300" />
             <p className="font-bold text-sm">SUB</p>
-            {serversData?.sub.map((s, i) => (
+            {subServers.map((s, i) => (
               <Button
                 size="sm"
                 key={i}
-                className={`uppercase font-bold ${serverName === s.serverName && key === "sub" && "bg-red-300"}`}
+                className={`uppercase font-bold ${
+                  serverName === s.serverName &&
+                  key === "sub" &&
+                  "bg-red-300"
+                }`}
                 onClick={() => changeServer(s.serverName, "sub")}
               >
                 {s.serverName}
               </Button>
             ))}
           </div>
-          {!!serversData?.dub.length && (
+
+          {hasDub && (
             <div className="flex flex-row items-center space-x-5 mt-2">
               <Mic className="text-green-300" />
               <p className="font-bold text-sm">DUB</p>
-              {serversData?.dub.map((s, i) => (
+              {dubServers.map((s, i) => (
                 <Button
                   size="sm"
                   key={i}
-                  className={`uppercase font-bold ${serverName === s.serverName && key === "dub" && "bg-green-300"}`}
+                  className={`uppercase font-bold ${
+                    serverName === s.serverName &&
+                    key === "dub" &&
+                    "bg-green-300"
+                  }`}
                   onClick={() => changeServer(s.serverName, "dub")}
                 >
                   {s.serverName}
@@ -200,10 +269,11 @@ const VideoPlayerSection = () => {
             </div>
           )}
         </div>
+
         <div className="flex flex-row items-center space-x-2 text-sm">
           <Switch
             checked={autoSkip}
-            onCheckedChange={(e) => onHandleAutoSkipChange(e)}
+            onCheckedChange={onHandleAutoSkipChange}
             id="auto-skip"
           />
           <p>Auto Skip</p>

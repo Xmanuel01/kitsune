@@ -11,6 +11,11 @@ const baseConfig = {
         hostname: "**",
       },
     ],
+    env: {
+      // Disable pino/thread-stream worker so it stops looking for lib/worker.js
+    ...(process.env??{}),
+    PINO_WORKER_THREADS: "false",
+    },
   },
   turbopack: {},
 
