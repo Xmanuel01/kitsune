@@ -41,6 +41,7 @@ const WatchTrailer = ({ videoHref }: { videoHref: string }) => {
               </motion.button>
               <div className="size-full border-2 border-white rounded-2xl overflow-hidden isolate z-[1] relative">
                 <iframe
+                  title="Anime trailer video player"
                   src={videoHref}
                   className="size-full rounded-2xl"
                   allowFullScreen

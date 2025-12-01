@@ -1,7 +1,7 @@
 import { GET_EPISODE_SERVERS } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IEpisodeServers } from "@/types/episodes";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 function sanitizeEpisodeId(raw?: string | null) {
   if (!raw) return null;

@@ -1,7 +1,7 @@
 import { GET_EPISODE_DATA } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IEpisodeSource } from "@/types/episodes";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const getEpisodeData = async (
   episodeId: string,

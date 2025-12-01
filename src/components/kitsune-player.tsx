@@ -14,6 +14,7 @@ import Hls from "hls.js";
 
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 import loadingImage from "@/assets/genkai.gif";
+import styles from "./player.module.css";
 import artplayerPluginHlsControl from "artplayer-plugin-hls-control";
 import artplayerPluginAmbilight from "artplayer-plugin-ambilight";
 import { cn } from "@/lib/utils";
@@ -79,7 +80,7 @@ function KitsunePlayer({
   const updateTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
   const hasMetMinWatchTimeRef = useRef<boolean>(false);
-  const initialSeekTimeRef = useRef<number | null>(null);
+  const initialSeekTimeRef = useRef<number | null>(0); // Initialize to 0 to start from beginning
 
   const { auth } = useAuthStore();
   const { createOrUpdateBookMark, syncWatchProgress } = useBookMarks({
@@ -129,18 +130,32 @@ function KitsunePlayer({
   // --- Construct proxied video URI using Vercel API route ---
   const uri = useMemo(() => {
     const firstSourceUrl = episodeInfo?.sources?.[0]?.url;
-    const referer = episodeInfo?.headers?.Referer;
+    const referer = episodeInfo?.headers?.Referer || 'https://megacloud.blog';
     if (!firstSourceUrl) return null;
 
     try {
       const url = encodeURIComponent(firstSourceUrl);
-      const refParam = referer ? `&ref=${encodeURIComponent(referer)}` : "";
+      const refParam = `&ref=${encodeURIComponent(referer)}`;
       return `${proxyBaseURI}?url=${url}${refParam}`;
     } catch (error) {
       console.error("Error constructing proxy URI:", error);
       return null;
     }
   }, [episodeInfo]);
+
+  // Custom loader for HLS.js to ensure all requests go through our proxy
+  const customLoader = useMemo(() => {
+    return class CustomLoader extends Hls.DefaultConfig.loader {
+      load(context: any, config: any, callbacks: any) {
+        if (context.url && !context.url.startsWith(proxyBaseURI)) {
+          const referer = episodeInfo?.headers?.Referer || 'https://megacloud.blog';
+          const proxyUrl = `${proxyBaseURI}?url=${encodeURIComponent(context.url)}&ref=${encodeURIComponent(referer)}`;
+          context.url = proxyUrl;
+        }
+        return super.load(context, config, callbacks);
+      }
+    };
+  }, [episodeInfo?.headers?.Referer]);
 
   const skipTimesRef = useRef<{
     introStart?: number;
@@ -269,6 +284,9 @@ function KitsunePlayer({
       }
       return;
     }
+    
+    // Reset initial seek time to 0 when changing episodes
+    initialSeekTimeRef.current = 0;
 
     const introStart = episodeInfo?.intro?.start;
     const introEnd = episodeInfo?.intro?.end;
@@ -405,7 +423,7 @@ function KitsunePlayer({
               hlsInstanceRef.current = null;
             }
 
-            const hls = new Hls();
+            const hls = new Hls({ loader: customLoader });
             hls.loadSource(url);
             hls.attachMedia(videoElement);
 
@@ -658,26 +676,10 @@ function KitsunePlayer({
         fontSize: art.height * 0.04 + "px",
       });
 
-      const seekTime = initialSeekTimeRef.current;
-      if (
-        seekTime !== null &&
-        seekTime > 0 &&
-        art.duration > 0 &&
-        seekTime < art.duration - 5
-      ) {
-        console.log(`Player ready, seeking to initial timestamp: ${seekTime}`);
-        setTimeout(() => {
-          if (artInstanceRef.current) {
-            artInstanceRef.current.seek = seekTime;
-          }
-        }, 100);
-        initialSeekTimeRef.current = null;
-      } else {
-        console.log(
-          "Player ready, not seeking (no valid initial time found or near end).",
-        );
-        initialSeekTimeRef.current = null;
-      }
+      // Always start from beginning - disable auto-resume
+      console.log("Player ready, starting from beginning.");
+      initialSeekTimeRef.current = null;
+      art.seek = 0;
     });
 
     art.on("resize", () => {
@@ -845,14 +847,13 @@ function KitsunePlayer({
       <div ref={artContainerRef} className="w-full h-full">
         {!uri && (
           <div
-            className="w-full h-full flex items-center justify-center bg-cover bg-center"
-            style={{ backgroundImage: `url(${animeInfo.image})` }}
+            className={styles.loadingBackground}
+            style={{ ['--bg-image' as any]: `url(${animeInfo.image})` }}
           >
             <Image
-              width={60}
-              height={60}
               src={loadingImage.src}
               alt="Loading..."
+              className={styles.loadingImage}
             />
           </div>
         )}

@@ -38,13 +38,18 @@ const EpisodePlaylist = ({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const episodeRefs = useRef<(HTMLDivElement | null)[]>([]);
 
+  const sortedEpisodes = React.useMemo(() => {
+    if (!episodes?.episodes) return [];
+    return [...episodes.episodes].sort((a, b) => a.number - b.number);
+  }, [episodes]);
+
   const [currentGroup, setCurrentGroup] = useState(
     `1 - ${Math.min(50, episodes?.totalEpisodes!)}`,
   );
   const [search, setSearch] = useState("");
 
   const [start, end] = currentGroup.split(" - ").map(Number);
-  const filtered = episodes.episodes.filter((_, index) => {
+  const filtered = sortedEpisodes.filter((_, index) => {
     return index >= start - 1 && index <= end - 1;
   });
 
@@ -52,34 +57,31 @@ const EpisodePlaylist = ({
     React.useState<Episode[]>(filtered);
 
   useEffect(() => {
-    if (
-      (!episodeId || !episodeId.includes("ep")) &&
-      !!episodes &&
-      !!episodes.episodes.length
-    ) {
-      if (!!isLatestEpisode) {
-        setSelectedEpisode(
-          episodes.episodes[episodes.episodes.length - 1].episodeId as string,
-        );
-      } else {
-        setSelectedEpisode(episodes.episodes[0].episodeId as string);
-      }
+    if (!episodes || !sortedEpisodes.length) return;
+
+    // If there's an episode ID in the URL, use it
+    if (episodeId && episodeId.includes("ep")) {
+      setSelectedEpisode(episodeId);
+      return;
     }
+
+    // Otherwise, use the first episode by default
+    setSelectedEpisode(sortedEpisodes[0].episodeId as string);
     //eslint-disable-next-line
-  }, [episodes]);
+  }, [episodes, sortedEpisodes, episodeId]);
 
   useEffect(() => {
     if (!episodes || currentGroup === "") return;
     const [start, end] = currentGroup.split(" - ").map(Number);
-    const filtered = episodes.episodes.filter((_, index) => {
+    const filtered = sortedEpisodes.filter((_, index) => {
       return index >= start - 1 && index <= end - 1;
     });
 
     setFilteredEpisodes(filtered);
-  }, [episodes, currentGroup]);
+  }, [episodes, sortedEpisodes, currentGroup]);
 
   useEffect(() => {
-    const episodeIndex = episodes?.episodes.findIndex(
+    const episodeIndex = sortedEpisodes.findIndex(
       (episode) => episode.episodeId === episodeId,
     );
 
@@ -104,7 +106,7 @@ const EpisodePlaylist = ({
       }
     }
     //eslint-disable-next-line
-  }, [animeId, episodes]);
+  }, [animeId, sortedEpisodes, episodeId]);
 
   const handleOnSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!episodes) return;
@@ -114,14 +116,14 @@ const EpisodePlaylist = ({
     if (!value) {
       // check if group is selected and filter based on that
       const [start, end] = currentGroup.split(" - ").map(Number);
-      const filtered = episodes.episodes.filter((_, index) => {
+      const filtered = sortedEpisodes.filter((_, index) => {
         return index >= start - 1 && index <= end - 1;
       });
       setFilteredEpisodes(filtered);
       return;
     }
 
-    const filtered = episodes?.episodes.filter((episode) =>
+    const filtered = sortedEpisodes.filter((episode) =>
       episode.number.toString().toLowerCase().includes(value.toLowerCase()),
     );
 
@@ -178,18 +180,21 @@ const EpisodePlaylist = ({
           className={`flex flex-col flex-grow gap-1 px-2 pb-3 overflow-y-auto`}
         >
           {filteredEpisodes &&
-            filteredEpisodes.map((episode, idx) => (
-              //@ts-expect-error type mismatch
-              <div key={idx} ref={(el) => (episodeRefs.current[idx] = el)}>
-                <EpisodeCard
-                  subOrDub={subOrDub}
-                  variant={"list"}
-                  episode={episode}
-                  animeId={animeId}
-                  watchedEpisodes={bookmarks?.[0].expand.watchHistory}
-                />
-              </div>
-            ))}
+            filteredEpisodes.map((episode, idx) => {
+              const episodeIndex = sortedEpisodes.findIndex(ep => ep.episodeId === episode.episodeId);
+              return (
+                //@ts-expect-error type mismatch
+                <div key={idx} ref={(el) => (episodeRefs.current[episodeIndex] = el)}>
+                  <EpisodeCard
+                    subOrDub={subOrDub}
+                    variant={"list"}
+                    episode={episode}
+                    animeId={animeId}
+                    watchedEpisodes={bookmarks?.[0].expand.watchHistory}
+                  />
+                </div>
+              );
+            })}
           {!filteredEpisodes?.length && !isLoading && "No Episodes"}
           {isLoading && <PlaylistSkeleton />}
         </div>

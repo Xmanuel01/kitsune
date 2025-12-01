@@ -64,6 +64,7 @@ const VideoPlayerSection: React.FC = () => {
     },
   );
 
+
   function changeServer(nextServerName: string, nextKey: string) {
     setServerName(nextServerName);
     setKey(nextKey);
@@ -183,6 +184,7 @@ const VideoPlayerSection: React.FC = () => {
         >
           {epParam ? (
             <iframe
+              title={`Video player for episode ${epParam}`}
               src={`https://megaplay.buzz/stream/s-2/${epParam}/sub`}
               width="100%"
               height="100%"

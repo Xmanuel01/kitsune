@@ -24,7 +24,9 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.86.0",
+    "@tanstack/react-query": "^5.90.11",
     "@types/react-calendar-heatmap": "^1.9.0",
+    "@upstash/redis": "^1.35.7",
     "aniwatch": "^2.24.3",
     "artplayer": "^5.3.0",
     "artplayer-plugin-ambilight": "^1.0.0",
@@ -37,14 +39,14 @@
     "framer-motion": "^11.18.2",
     "hls.js": "^1.6.15",
     "html-react-parser": "^5.2.10",
+    "ioredis": "^5.8.2",
     "lucide-react": "^0.555.0",
-    "next": "^14.2.33",
+    "next": "^16.0.5",
     "next-runtime-env": "^3.3.0",
     "next-themes": "^0.4.6",
-    "react": "^18",
+    "react": "^19.2.0",
     "react-calendar-heatmap": "^1.10.0",
-    "react-dom": "^18",
-    "react-query": "^3.39.3",
+    "react-dom": "^19.2.0",
     "react-tooltip": "^5.30.0",
     "sharp": "^0.34.5",
     "sonner": "^2.0.7",
@@ -61,6 +63,12 @@
     "eslint-config-next": "14.0.4",
     "postcss": "^8",
     "tailwindcss": "^3.3.0",
-    "typescript": "^5"
+    "tap": "^21.4.0",
+    "typescript": "^5",
+    "why-is-node-running": "^3.2.2"
+  },
+  "browser": {
+    "tap": false,
+    "why-is-node-running": false
   }
 }

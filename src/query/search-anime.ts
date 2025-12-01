@@ -1,11 +1,11 @@
 import { SEARCH_ANIME } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { ISuggestionAnime } from "@/types/anime";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const searchAnime = async (q: string) => {
   if (q === "") {
-    return;
+    return [];
   }
   const res = await api.get("/api/search/suggestion", {
     params: {

@@ -1,7 +1,7 @@
 import { GET_ANIME_DETAILS } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IAnimeDetails } from "@/types/anime-details";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const getAnimeDetails = async (animeId: string) => {
   const res = await api.get("/api/anime/" + animeId);

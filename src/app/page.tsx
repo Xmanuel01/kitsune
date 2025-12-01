@@ -3,7 +3,7 @@
 import ContinueWatching from "@/components/continue-watching";
 import FeaturedCollection from "@/components/featured-collection";
 import { useGetHomePageData } from "@/query/get-home-page-data";
-import { IAnime, LatestCompletedAnime, SpotlightAnime } from "@/types/anime";
+import { IAnime, IAnimeData, LatestCompletedAnime, SpotlightAnime } from "@/types/anime";
 import dynamic from "next/dynamic";
 
 // Dynamically import components
@@ -20,12 +20,12 @@ export default function Home() {
   return (
     <div className="flex flex-col bg-[#121212]">
       <HeroSection
-        spotlightAnime={data?.spotlightAnimes as SpotlightAnime[]}
+        spotlightAnime={(data as IAnimeData)?.spotlightAnimes}
         isDataLoading={isLoading}
       />
       <LatestEpisodesAnime
         loading={isLoading}
-        latestEpisodes={data?.latestEpisodeAnimes as LatestCompletedAnime[]}
+        latestEpisodes={(data as IAnimeData)?.latestEpisodeAnimes}
       />
 
       <ContinueWatching loading={isLoading} />
@@ -35,21 +35,21 @@ export default function Home() {
         featuredAnime={[
           {
             title: "Most Favorite Anime",
-            anime: data?.mostFavoriteAnimes as IAnime[],
+            anime: (data as IAnimeData)?.mostFavoriteAnimes,
           },
           {
             title: "Most Popular Anime",
-            anime: data?.mostPopularAnimes as IAnime[],
+            anime: (data as IAnimeData)?.mostPopularAnimes,
           },
           {
             title: "Latest Completed Anime",
-            anime: data?.latestCompletedAnimes as LatestCompletedAnime[],
+            anime: (data as IAnimeData)?.latestCompletedAnimes,
           },
         ]}
       />
       <AnimeSections
         title={"Trending Anime"}
-        trendingAnime={data?.trendingAnimes as IAnime[]}
+        trendingAnime={(data as IAnimeData)?.trendingAnimes}
         loading={isLoading}
       />
 
@@ -57,7 +57,7 @@ export default function Home() {
 
       <AnimeSections
         title={"Upcoming Animes"}
-        trendingAnime={data?.topUpcomingAnimes as IAnime[]}
+        trendingAnime={(data as IAnimeData)?.topUpcomingAnimes as IAnime[]}
         loading={isLoading}
       />
     </div>

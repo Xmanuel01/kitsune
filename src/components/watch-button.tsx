@@ -19,15 +19,11 @@ const WatchButton = () => {
 
   return (
     <ButtonLink
-      href={
-        !hasWatchedAnime
-          ? `${ROUTES.WATCH}?anime=${animeId}`
-          : `${ROUTES.WATCH}?anime=${animeId}&episode=${latestEpisodeWatched}`
-      }
+      href={`${ROUTES.WATCH}?anime=${animeId}`}
       className="max-w-fit text-base"
       LeftIcon={CirclePlay}
     >
-      {hasWatchedAnime ? "Continue Watching" : "Start Watching"}
+      {hasWatchedAnime ? "Watch Again" : "Start Watching"}
     </ButtonLink>
   );
 };

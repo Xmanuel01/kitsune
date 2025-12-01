@@ -1,7 +1,7 @@
 import { GET_ALL_EPISODES } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IEpisodes } from "@/types/episodes";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const getAllEpisodes = async (animeId: string) => {
     const res = await api.get(`/api/anime/${animeId}/episodes`);

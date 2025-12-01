@@ -1,7 +1,7 @@
 import { SEARCH_ANIME } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IAnimeSearch, SearchAnimeParams } from "@/types/anime";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const searchAnime = async (params: SearchAnimeParams) => {
   const res = await api.get("/api/search", {

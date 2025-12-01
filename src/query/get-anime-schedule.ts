@@ -1,7 +1,7 @@
 import { GET_ANIME_SCHEDULE } from "@/constants/query-keys";
 import { api } from "@/lib/api";
 import { IAnimeSchedule } from "@/types/anime-schedule";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 const getAnimeSchedule = async (date: string) => {
   const queryParams = date ? `?date=${date}` : "";
