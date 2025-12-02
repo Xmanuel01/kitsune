@@ -1,30 +1,39 @@
 import Container from "./container";
-import React, { useMemo } from "react";
+import React, { useMemo, useCallback } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { useGetAnimeSchedule } from "@/query/get-anime-schedule";
 import Button from "./common/custom-button";
 import Link from "next/link";
 import { ROUTES } from "@/constants/routes";
 
-function AnimeSchedule() {
-  const currentDate = new Date();
-  const currentDay = currentDate
-    .toLocaleString("en-US", { weekday: "long" })
-    .toLowerCase();
-  const currentDayIndex = currentDate.getDay();
-  const daysOfWeek = [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ];
-  const [currentSelectedTab, setCurrentSelectedTab] =
-    React.useState<string>(currentDay);
+const DAYS_OF_WEEK = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
 
-  const defaultTab = daysOfWeek.includes(currentDay) ? currentDay : "monday";
+function AnimeSchedule() {
+  const currentDate = useMemo(() => new Date(), []);
+  const currentDay = useMemo(
+    () => currentDate.toLocaleString("en-US", { weekday: "long" }).toLowerCase(),
+    [currentDate]
+  );
+  const currentDayIndex = useMemo(() => currentDate.getDay(), [currentDate]);
+  
+  const [currentSelectedTab, setCurrentSelectedTab] = React.useState<string>(currentDay);
+  const defaultTab = DAYS_OF_WEEK.includes(currentDay as any) ? currentDay : "monday";
+
+  const getDateForWeekday = useCallback((targetDay: string) => {
+    const targetIndex = DAYS_OF_WEEK.indexOf(targetDay as any);
+    const date = new Date(currentDate);
+    const diff = targetIndex - currentDayIndex;
+    date.setDate(currentDate.getDate() + diff);
+    return date;
+  }, [currentDate, currentDayIndex]);
 
   const selectedDate = useMemo(() => {
     const date = getDateForWeekday(currentSelectedTab);
@@ -33,14 +42,6 @@ function AnimeSchedule() {
   }, [currentSelectedTab, getDateForWeekday]);
 
   const { isLoading, data } = useGetAnimeSchedule(selectedDate);
-
-  function getDateForWeekday(targetDay: string) {
-    const targetIndex = daysOfWeek.indexOf(targetDay);
-    const date = new Date(currentDate);
-    const diff = targetIndex - currentDayIndex;
-    date.setDate(currentDate.getDate() + diff);
-    return date;
-  }
 
   return (
     <Container className="flex flex-col gap-5 py-10 items-center lg:items-start">
@@ -51,23 +52,28 @@ function AnimeSchedule() {
         onValueChange={(val) => setCurrentSelectedTab(val)}
         value={currentSelectedTab}
         className="w-full"
+        key="anime-schedule-tabs"
       >
         <TabsList className="grid w-full grid-cols-7">
-          {daysOfWeek.map((day) => (
-            <TabsTrigger key={day} value={day}>
-              {day.substring(0, 3).toUpperCase()} -{" "}
-              {getDateForWeekday(day).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-              })}
-            </TabsTrigger>
-          ))}
+          {DAYS_OF_WEEK.map((day) => {
+            const date = getDateForWeekday(day);
+            const formattedDate = date.toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+            });
+            
+            return (
+              <TabsTrigger key={day} value={day}>
+                {day.substring(0, 3).toUpperCase()} - {formattedDate}
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
 
         {isLoading ? (
           <LoadingSkeleton />
         ) : (
-          daysOfWeek.map((day) => (
+          DAYS_OF_WEEK.map((day) => (
             <TabsContent key={day} value={day}>
               {day === currentSelectedTab && (
                 <div className="flex flex-col gap-5 w-full p-4">

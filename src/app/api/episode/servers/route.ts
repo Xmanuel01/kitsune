@@ -5,6 +5,13 @@ import { getHiAnimeScraper } from "@/lib/hianime";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// simple in-memory cache to avoid hitting flaky upstream on every request
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const memoryCache = new Map<
+  string,
+  { data: any; fetchedAt: number }
+>();
+
 // Sanitize incoming id: decode if needed and only allow base + optional '?ep=digits'
 const sanitize = (raw?: string | null) => {
   if (!raw) return null;
@@ -25,6 +32,8 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const animeEpisodeIdRaw = searchParams.get("animeEpisodeId");
+    const category = searchParams.get("category") || "sub";
+    const server = searchParams.get("server") || "hd-1";
 
     if (!animeEpisodeIdRaw) {
       return Response.json(
@@ -41,6 +50,15 @@ export async function GET(req: Request) {
       );
     }
 
+    // Reuse fresh data if we already fetched recently
+    const cacheKey = `${animeEpisodeId}::${category}::${server}`;
+    const cached = memoryCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+      console.debug("[EPISODE_SERVERS] returning cached data", cacheKey);
+      return Response.json({ data: cached.data, fromCache: true });
+    }
+
     const scraper = await getHiAnimeScraper();
     if (!scraper) {
       console.error("[EPISODE_SERVERS] HiAnime scraper unavailable");
@@ -50,7 +68,29 @@ export async function GET(req: Request) {
       );
     }
 
-    const data = await scraper.getEpisodeServers(animeEpisodeId);
+    let data: any;
+    try {
+      data = await scraper.getEpisodeServers(animeEpisodeId);
+    } catch (scrapeErr: any) {
+      console.error("[EPISODE_SERVERS] scraper.getEpisodeServers error:", {
+        animeEpisodeId,
+        message: scrapeErr?.message,
+        stack: scrapeErr?.stack,
+      });
+      // fallback to stale cache if available instead of hard failing
+      if (cached) {
+        console.warn("[EPISODE_SERVERS] using stale cached data after failure", cacheKey);
+        return Response.json({ data: cached.data, fromCache: true, stale: true });
+      }
+      const message = scrapeErr?.message || "scrape failed";
+      return Response.json(
+        { error: `scraper error: ${message}` },
+        { status: 502 },
+      );
+    }
+
+    // cache freshly fetched data in-memory to reduce upstream pressure
+    memoryCache.set(cacheKey, { data, fetchedAt: now });
 
     return Response.json({ data });
   } catch (err: any) {
