@@ -79,7 +79,7 @@ function AnimeSchedule() {
                 <div className="flex flex-col gap-5 w-full p-4">
                   {data?.scheduledAnimes.map((anime) => (
                     <div
-                      key={anime.id}
+                      key={`${anime.id}-${anime.airingTimestamp}`}
                       className="flex items-center justify-between"
                     >
                       <div className="flex items-center gap-x-5">
