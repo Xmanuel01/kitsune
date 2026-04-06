@@ -14,6 +14,7 @@ import Hls from "hls.js";
 
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 import loadingImage from "@/assets/genkai.gif";
+import styles from "./player.module.css";
 import artplayerPluginHlsControl from "artplayer-plugin-hls-control";
 import artplayerPluginAmbilight from "artplayer-plugin-ambilight";
 import { cn } from "@/lib/utils";
@@ -79,7 +80,7 @@ function KitsunePlayer({
   const updateTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateTimeRef = useRef<number>(0);
   const hasMetMinWatchTimeRef = useRef<boolean>(false);
-  const initialSeekTimeRef = useRef<number | null>(null);
+  const initialSeekTimeRef = useRef<number | null>(0); // Initialize to 0 to start from beginning
 
   const { auth } = useAuthStore();
   const { createOrUpdateBookMark, syncWatchProgress } = useBookMarks({
@@ -129,18 +130,212 @@ function KitsunePlayer({
   // --- Construct proxied video URI using Vercel API route ---
   const uri = useMemo(() => {
     const firstSourceUrl = episodeInfo?.sources?.[0]?.url;
-    const referer = episodeInfo?.headers?.Referer;
+    const referer = episodeInfo?.headers?.Referer || 'https://megacloud.blog';
     if (!firstSourceUrl) return null;
 
     try {
-      const url = encodeURIComponent(firstSourceUrl);
-      const refParam = referer ? `&ref=${encodeURIComponent(referer)}` : "";
+      // If the URL is already a proxy URL, return it as-is
+      if (firstSourceUrl.includes(proxyBaseURI)) {
+        return firstSourceUrl;
+      }
+      
+      // If the URL is already encoded, decode it first to prevent double-encoding
+      const decodedUrl = firstSourceUrl.includes('%')
+        ? decodeURIComponent(firstSourceUrl)
+        : firstSourceUrl;
+      
+      const url = encodeURIComponent(decodedUrl);
+      const refParam = `&ref=${encodeURIComponent(referer)}`;
       return `${proxyBaseURI}?url=${url}${refParam}`;
     } catch (error) {
       console.error("Error constructing proxy URI:", error);
       return null;
     }
   }, [episodeInfo]);
+
+  // Custom loader for HLS.js with enhanced error handling and retries
+  const customLoader = useMemo(() => {
+    return class CustomLoader extends Hls.DefaultConfig.loader {
+      private retryCount = 0;
+      private maxRetries = 3;
+      private baseDelay = 1000; // 1 second initial delay
+
+      private async fetchWithRetry(url: string, config: any, callbacks: any, retry = 0): Promise<Response> {
+        try {
+          const response = await fetch(url, config);
+          
+          // If we get a 403, try with a different CDN if available
+          if (response.status === 403 && retry < this.maxRetries) {
+            console.warn(`Request failed with 403, retry ${retry + 1}/${this.maxRetries}...`);
+            // Try with a different CDN if possible
+            const newUrl = url.includes('breezygale56.online') 
+              ? url.replace('breezygale56.online', 'sunshinerays93.live')
+              : url;
+            
+            // Exponential backoff
+            const delay = this.baseDelay * Math.pow(2, retry);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            
+            return this.fetchWithRetry(newUrl, config, callbacks, retry + 1);
+          }
+          
+          return response;
+        } catch (error) {
+          console.error('Fetch error:', error);
+          throw error;
+        }
+      }
+
+      load(context: any, config: any, callbacks: any) {
+        // Store original callbacks
+        const originalCallbacks = { ...callbacks };
+        const controller = new AbortController();
+        
+        // Override callbacks to handle errors
+        callbacks.onError = (data: any, details: any) => {
+          console.error('HLS.js error:', { data, details });
+          if (originalCallbacks.onError) {
+            originalCallbacks.onError(data, details);
+          }
+        };
+        
+        // Add proper context to callbacks
+        context.loader = this;
+        context.stats = context.stats || {};
+
+        // Always use custom loader for consistent proxying and headers
+        try {
+          const isAlreadyProxied = context.url.includes(proxyBaseURI);
+          const originalUrl = isAlreadyProxied
+            ? decodeURIComponent(context.url.split('url=')[1].split('&')[0])
+            : context.url;
+          const referer = episodeInfo?.headers?.Referer || 'https://megacloud.blog';
+
+          // Try to get a working URL by checking different CDNs
+          const getProxiedUrl = (url: string) => {
+            const decodedUrl = url.includes('%') ? decodeURIComponent(url) : url;
+            return `${proxyBaseURI}?url=${encodeURIComponent(decodedUrl)}&ref=${encodeURIComponent(referer)}`;
+          };
+
+          // If we have multiple sources, try the next one on failure
+          const sources = [originalUrl];
+          if (episodeInfo?.sources?.length > 1) {
+            episodeInfo.sources.slice(1).forEach(src => sources.push(src.url));
+          }
+
+          // Try each source until one works
+          const tryNextSource = async (index = 0) => {
+            if (index >= sources.length) {
+              console.error('All sources failed');
+              if (originalCallbacks.onError) {
+                originalCallbacks.onError(
+                  { code: 0, text: 'All sources failed' },
+                  context,
+                  null
+                );
+              }
+              return;
+            }
+
+            const sourceUrl = sources[index];
+            const proxyUrl = getProxiedUrl(sourceUrl);
+            console.log(`Trying source ${index + 1}/${sources.length}:`, { sourceUrl, proxyUrl });
+
+            try {
+              // Use our custom fetch with retry
+              this.fetchWithRetry(proxyUrl, {
+                method: 'GET',
+                headers: { 'Referer': referer }
+              }, callbacks)
+              .then(response => {
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                return response.arrayBuffer().then(data => ({ data, response }));
+              })
+              .then(async ({ data, response }) => {
+                if (originalCallbacks.onSuccess) {
+                  try {
+                    // Convert arrayBuffer to string for playlist files (.m3u8/.m3u)
+                    let processedData: ArrayBuffer | string = data;
+                    if (sourceUrl.includes('.m3u8') || sourceUrl.includes('.m3u')) {
+                      processedData = new TextDecoder('utf-8').decode(data);
+                      
+                      // Ensure the response has the required properties
+                      const stats = {
+                        trequest: performance.now(),
+                        tfirst: performance.now(),
+                        tload: performance.now(),
+                        length: data.byteLength,
+                        chunkCount: 1,
+                        bwEstimate: 0,
+                        loading: { start: 0, first: 0, end: 0 },
+                        parsing: { start: 0, end: 0 },
+                        buffering: { start: 0, first: 0, end: 0 }
+                      };
+                      
+                      // HLS.js expects response to be an object with data and url properties
+                      const hlsResponse = { 
+                        data: processedData, 
+                        url: context.url,
+                        code: response.status,
+                        fromCache: response.type === 'opaque' || response.type === 'opaqueredirect'
+                      };
+                      
+                      // Call onSuccess with proper context
+                      originalCallbacks.onSuccess(hlsResponse, stats, context);
+                    } else {
+                      // For non-playlist data, pass through as is
+                      originalCallbacks.onSuccess(
+                        { data: processedData, url: context.url },
+                        { trequest: performance.now(), tfirst: performance.now(), tload: performance.now() },
+                        context
+                      );
+                    }
+                  } catch (error) {
+                    console.error('Error processing HLS response:', error);
+                    if (originalCallbacks.onError) {
+                      originalCallbacks.onError(
+                        { type: 'networkError', details: 'Error processing response', fatal: true },
+                        'hlsError',
+                        context
+                      );
+                    }
+                  }
+                }
+              })
+              .catch(error => {
+                console.error(`Source ${index + 1} failed:`, error);
+                tryNextSource(index + 1);
+              });
+            } catch (error) {
+              console.error(`Error with source ${index + 1}:`, error);
+              tryNextSource(index + 1);
+            }
+          };
+
+          // Start trying sources
+          tryNextSource();
+
+          // Return proper abort controller
+          const controller = new AbortController();
+          return {
+            abort: () => {
+              controller.abort();
+            }
+          };
+
+        } catch (error) {
+          console.error('Error in custom loader:', error);
+          if (originalCallbacks.onError) {
+            originalCallbacks.onError(
+              { type: 'otherError', err: error, fatal: true },
+              'otherError'
+            );
+          }
+          return super.load(context, config, callbacks);
+        }
+      }
+    };
+  }, [episodeInfo?.sources, episodeInfo?.headers?.Referer]);
 
   const skipTimesRef = useRef<{
     introStart?: number;
@@ -269,6 +464,9 @@ function KitsunePlayer({
       }
       return;
     }
+    
+    // Reset initial seek time to 0 when changing episodes
+    initialSeekTimeRef.current = 0;
 
     const introStart = episodeInfo?.intro?.start;
     const introEnd = episodeInfo?.intro?.end;
@@ -405,7 +603,99 @@ function KitsunePlayer({
               hlsInstanceRef.current = null;
             }
 
-            const hls = new Hls();
+            const hls = new Hls({
+              loader: customLoader,
+              // Buffer settings
+              maxBufferLength: 60, // Maximum buffer length in seconds
+              maxMaxBufferLength: 120, // Absolute maximum buffer length
+              maxBufferSize: 60 * 1000 * 1000, // 60MB buffer size
+              maxBufferHole: 0.5, // Maximum buffer hole allowed (in seconds)
+              highBufferWatchdogPeriod: 2, // Check buffer every 2 seconds
+              nudgeOffset: 0.1, // Nudge offset for buffer adjustments
+              nudgeMaxRetry: 3, // Max retry attempts for nudge
+              maxFragLookUpTolerance: 0.25, // Max time tolerance for fragment lookup
+              
+              // ABR settings
+              abrEwmaDefaultEstimate: 500000, // Default bandwidth estimate in bits/s
+              abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
+              abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
+              abrMaxWithRealBitrate: true, // Use real bitrate for ABR
+              
+              // Buffer management
+              backBufferLength: 30, // Keep 30s of back buffer
+              maxStarvationDelay: 4, // Max delay before reducing quality
+              maxLoadingDelay: 4, // Max delay for loading segments
+              
+              // Level/quality selection
+              startLevel: -1, // Auto quality selection
+              testBandwidth: true, // Test bandwidth for better quality selection
+              
+              // Performance
+              enableWorker: true, // Enable WebWorker for better performance
+              enableSoftwareAES: true, // Use software AES decryption
+              
+              // Timeout settings
+              manifestLoadingTimeOut: 10000, // 10s timeout for manifest
+              manifestLoadingMaxRetry: 3, // Max retries for manifest
+              manifestLoadingRetryDelay: 1000, // 1s delay between retries
+              
+              levelLoadingTimeOut: 10000, // 10s timeout for level loading
+              levelLoadingMaxRetry: 3, // Max retries for level loading
+              levelLoadingRetryDelay: 1000, // 1s delay between retries
+              
+              // Fragment loading settings
+              fragLoadingTimeOut: 20000, // 20s timeout for fragments
+              fragLoadingMaxRetry: 6, // Max retries for fragment loading
+              fragLoadingRetryDelay: 1000, // 1s delay between retries
+              startFragPrefetch: true, // Prefetch start fragment
+              
+              // Error recovery
+              fpsDroppedMonitoringPeriod: 1, // Monitor FPS every second
+              fpsDroppedMonitoringThreshold: 0.2, // 20% FPS drop triggers recovery
+              appendErrorMaxRetry: 3, // Max retries for appending media
+              
+              // Subtitles and captions
+              enableWebVTT: true, // Enable WebVTT support
+              enableCEA708Captions: true, // Enable CEA-708 captions
+              
+              // Video processing
+              stretchShortVideoTrack: true, // Stretch video to fill buffer
+              forceKeyFrameOnDiscontinuity: true, // Force keyframe on discontinuity
+              
+              // ABR bandwidth estimation
+              abrEwmaSlowLive: 3.0, // Slow EWMA factor for live streams
+              abrEwmaSlowVoD: 3.0, // Slow EWMA factor for VOD
+              abrEwmaFastLive: 1.0, // Fast EWMA factor for live
+              abrEwmaFastVoD: 1.0, // Fast EWMA factor for VOD
+
+              // Other settings
+              minAutoBitrate: 0, // Minimum auto bitrate
+              emeEnabled: false, // Disable EME (Encrypted Media Extensions)
+              requestMediaKeySystemAccessFunc: null // No custom media key system access
+            });
+            
+            // Additional event listeners for better error handling
+            hls.on(Hls.Events.ERROR, (event, data) => {
+              console.warn('HLS error:', { event, data });
+              if (data.fatal) {
+                switch (data.type) {
+                  case Hls.ErrorTypes.NETWORK_ERROR:
+                    console.log('Fatal network error, trying to recover...');
+                    hls.startLoad();
+                    break;
+                  case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.log('Fatal media error, recovering...');
+                    hls.recoverMediaError();
+                    break;
+                  default:
+                    console.error('Unrecoverable error, destroying HLS');
+                    hls.destroy();
+                    break;
+                }
+              }
+            });
+            
+            // Load the source and attach to video element
             hls.loadSource(url);
             hls.attachMedia(videoElement);
 
@@ -658,26 +948,10 @@ function KitsunePlayer({
         fontSize: art.height * 0.04 + "px",
       });
 
-      const seekTime = initialSeekTimeRef.current;
-      if (
-        seekTime !== null &&
-        seekTime > 0 &&
-        art.duration > 0 &&
-        seekTime < art.duration - 5
-      ) {
-        console.log(`Player ready, seeking to initial timestamp: ${seekTime}`);
-        setTimeout(() => {
-          if (artInstanceRef.current) {
-            artInstanceRef.current.seek = seekTime;
-          }
-        }, 100);
-        initialSeekTimeRef.current = null;
-      } else {
-        console.log(
-          "Player ready, not seeking (no valid initial time found or near end).",
-        );
-        initialSeekTimeRef.current = null;
-      }
+      // Always start from beginning - disable auto-resume
+      console.log("Player ready, starting from beginning.");
+      initialSeekTimeRef.current = null;
+      art.seek = 0;
     });
 
     art.on("resize", () => {
@@ -845,14 +1119,13 @@ function KitsunePlayer({
       <div ref={artContainerRef} className="w-full h-full">
         {!uri && (
           <div
-            className="w-full h-full flex items-center justify-center bg-cover bg-center"
-            style={{ backgroundImage: `url(${animeInfo.image})` }}
+            className={styles.loadingBackground}
+            style={{ ['--bg-image' as any]: `url(${animeInfo.image})` }}
           >
             <Image
-              width={60}
-              height={60}
               src={loadingImage.src}
               alt="Loading..."
+              className={styles.loadingImage}
             />
           </div>
         )}

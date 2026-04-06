@@ -1,406 +1,323 @@
-import { NextRequest, NextResponse } from "next/server";
+// src/app/api/m3u8/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { supabaseAdmin } from '@/lib/supabaseClient';
 
-export const runtime = "nodejs";
+const DEFAULT_TIMEOUT_MS = 12000;
+const CACHE_TABLE = 'm3u8_cache';
+const PLAYLIST_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-// Comprehensive list of media and subtitle formats
-const MEDIA_EXTENSIONS = [
-  // Video segments
-  ".ts",
-  ".m4s",
-  ".mp4",
-  ".m4v",
-  ".mov",
-  ".avi",
-  ".mkv",
-  ".webm",
-  ".flv",
-  // Audio
-  ".aac",
-  ".mp3",
-  ".wav",
-  ".flac",
-  ".ogg",
-  // Playlists
-  ".m3u8",
-  ".m3u",
-  ".mpd",
-  // Subtitles
-  ".vtt",
-  ".srt",
-  ".ass",
-  ".ssa",
-  ".ttml",
-  ".dfxp",
-  ".sbv",
-  ".sub",
-  // Images
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".webp",
-  ".bmp",
-  ".gif",
-  ".svg",
-  // Other
-  ".xml",
-  ".json",
-  ".txt",
-];
+type CacheRow = {
+  cacheKey: string;
+  content: string;
+  isBinary: boolean;
+  encoding?: string | null;
+  fetchedAt?: string | null;
+};
 
-const MEDIA_CONTENT_TYPES = [
-  "application/vnd.apple.mpegurl",
-  "application/x-mpegurl",
-  "audio/mpegurl",
-  "application/dash+xml",
-  "video/mp2t",
-  "video/mp4",
-  "video/webm",
-  "video/x-flv",
-  "audio/mp4",
-  "audio/aac",
-  "audio/mpeg",
-  "text/vtt",
-  "application/x-subrip",
-  "application/ttml+xml",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "text/plain",
-  "application/octet-stream",
-];
+async function getCachedPlaylist(cacheKey: string): Promise<string | null> {
+  if (!supabaseAdmin) return null;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from(CACHE_TABLE)
+      .select('content, isBinary, encoding, fetchedAt')
+      .eq('cacheKey', cacheKey)
+      .maybeSingle();
 
-function shouldProxyByExtension(url: URL): boolean {
-  const pathname = url.pathname.toLowerCase();
-  return MEDIA_EXTENSIONS.some((ext) => pathname.endsWith(ext));
+    if (error) {
+      console.warn('[M3U8_CACHE] read error', error.message || error);
+      return null;
+    }
+    if (!data) return null;
+
+    const ageMs = data.fetchedAt ? Date.now() - new Date(data.fetchedAt).getTime() : Infinity;
+    if (ageMs > PLAYLIST_CACHE_TTL_MS) {
+      return null;
+    }
+    return data.content;
+  } catch (err) {
+    console.warn('[M3U8_CACHE] failed to read', err);
+    return null;
+  }
 }
 
-function shouldProxyContent(contentType: string | null, url: URL): boolean {
-  if (!contentType) {
-    return shouldProxyByExtension(url);
+async function setCachedPlaylist(cacheKey: string, content: string): Promise<void> {
+  if (!supabaseAdmin) return;
+  try {
+    const { error } = await supabaseAdmin
+      .from(CACHE_TABLE)
+      .upsert({
+        cacheKey,
+        content,
+        isBinary: false,
+        encoding: 'utf-8',
+        fetchedAt: new Date().toISOString(),
+      });
+    if (error) {
+      console.warn('[M3U8_CACHE] write error', error.message || error);
+    }
+  } catch (err) {
+    console.warn('[M3U8_CACHE] failed to write', err);
   }
+}
 
-  const ct = contentType.toLowerCase().split(";")[0];
-
-  if (MEDIA_CONTENT_TYPES.some((mediaType) => ct.includes(mediaType))) {
+function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
     return true;
   }
-
-  if (ct.startsWith("text/")) {
+  // Block common private IPv4 ranges
+  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [ , a, b, c, d ] = ipv4Match.map(Number);
+    if (a === 127 || a === 0) return true;
+    if (a === 10) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+  }
+  // Block common local domain names
+  if (host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
     return true;
   }
-
-  if (
-    ct.includes("application/") ||
-    ct.includes("video/") ||
-    ct.includes("audio/") ||
-    ct.includes("image/")
-  ) {
+  // Block unique local and link-local IPv6 addresses
+  if (host.startsWith('fc00') || host.startsWith('fd00') || host.startsWith('fe80')) {
     return true;
   }
+  return false;
+}
 
-  return shouldProxyByExtension(url);
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Fetch timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
- * Decide if we should treat upstream as text (so we can rewrite it).
- * This is where we fix the "application/octet-stream" playlist issue.
+ * Infer content type based on file extension (fallback if upstream doesn't send Content-Type).
  */
-function isTextBasedContent(contentType: string | null, url: URL): boolean {
-  const pathname = url.pathname.toLowerCase();
-
-  // Extension-based detection first (covers mislabelled content-type)
-  if (
-    pathname.endsWith(".m3u8") ||
-    pathname.endsWith(".m3u") ||
-    pathname.endsWith(".vtt") ||
-    pathname.endsWith(".srt") ||
-    pathname.endsWith(".xml") ||
-    pathname.endsWith(".mpd") ||
-    pathname.endsWith(".json") ||
-    pathname.endsWith(".txt")
-  ) {
-    return true;
+function inferContentType(ext: string | undefined): string {
+  switch (ext) {
+    case 'm3u8':
+    case 'm3u':
+      return 'application/vnd.apple.mpegurl';
+    case 'mpd':
+      return 'application/dash+xml';
+    case 'ts':
+      return 'video/mp2t';
+    case 'm4s':
+    case 'mp4':
+      return 'video/mp4';
+    case 'webm':
+      return 'video/webm';
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'aac':
+      return 'audio/aac';
+    case 'm4a':
+      return 'audio/mp4';
+    default:
+      return 'application/octet-stream';
   }
-
-  if (!contentType) return false;
-
-  const ct = contentType.toLowerCase();
-
-  return (
-    ct.startsWith("text/") ||
-    ct.includes("application/vnd.apple.mpegurl") ||
-    ct.includes("application/x-mpegurl") ||
-    ct.includes("application/dash+xml") ||
-    ct.includes("application/xml") ||
-    ct.includes("application/json") ||
-    ct.includes("text/vtt") ||
-    ct.includes("application/x-subrip") ||
-    ct.includes("application/ttml+xml")
-  );
 }
 
-function rewriteM3U8(body: string, targetUrl: URL, refEncoded: string): string {
-  const lines = body.split("\n");
-
-  const rewrittenLines = lines.map((line) => {
+/**
+ * Rewrite all media URIs in an M3U8 playlist to proxy through this API.
+ */
+function rewritePlaylist(content: string, baseUrl: URL, referer?: string | null): string {
+  const lines = content.split(/\r?\n/);
+  return lines.map(line => {
     const trimmed = line.trim();
-
-    if (trimmed === "" || trimmed.startsWith("#")) {
+    if (!trimmed || trimmed.startsWith('#')) {
+      // Comment or empty line, leave unchanged
       return line;
     }
-
-    // Absolute URLs
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-      const encoded = encodeURIComponent(trimmed);
-      return `/api/m3u8?url=${encoded}&ref=${refEncoded}`;
+    try {
+      // Resolve relative URIs against the playlist's base URL
+      const absoluteUrl = new URL(trimmed, baseUrl);
+      // Replace with proxied API URL (encoded original URL as query param)
+      const refParam = referer ? `&ref=${encodeURIComponent(referer)}` : '';
+      return `/api/m3u8?url=${encodeURIComponent(absoluteUrl.href)}${refParam}`;
+    } catch {
+      // If URL resolution fails (malformed URI), leave it unchanged
+      return line;
     }
-
-    // Protocol-relative URLs (//example.com/path)
-    if (trimmed.startsWith("//")) {
-      try {
-        const absolute = new URL(targetUrl.protocol + trimmed).toString();
-        const encoded = encodeURIComponent(absolute);
-        return `/api/m3u8?url=${encoded}&ref=${refEncoded}`;
-      } catch {
-        return line;
-      }
-    }
-
-    // Absolute paths (/path/to/file)
-    if (trimmed.startsWith("/")) {
-      try {
-        const absolute = new URL(trimmed, targetUrl.origin).toString();
-        const encoded = encodeURIComponent(absolute);
-        return `/api/m3u8?url=${encoded}&ref=${refEncoded}`;
-      } catch {
-        return line;
-      }
-    }
-
-    // Relative paths (segments, other playlists, etc.)
-    if (!trimmed.includes("://") && !trimmed.startsWith("#")) {
-      try {
-        const absolute = new URL(trimmed, targetUrl).toString();
-        const encoded = encodeURIComponent(absolute);
-        return `/api/m3u8?url=${encoded}&ref=${refEncoded}`;
-      } catch {
-        return line;
-      }
-    }
-
-    return line;
-  });
-
-  return rewrittenLines.join("\n");
+  }).join('\n');
 }
 
-function rewriteVTT(body: string, targetUrl: URL, refEncoded: string): string {
-  return body.replace(
-    /(https?:\/\/[^\s\r\n\)]+|\.\.?\/[^\s\r\n\)]+)/g,
-    (match: string) => {
-      try {
-        let absolute: string;
-
-        if (match.startsWith("http")) {
-          absolute = match;
-        } else {
-          absolute = new URL(match, targetUrl).toString();
-        }
-
-        const encoded = encodeURIComponent(absolute);
-        return `/api/m3u8?url=${encoded}&ref=${refEncoded}`;
-      } catch {
-        return match;
-      }
-    }
-  );
-}
-
-function rewriteXML(body: string, targetUrl: URL, refEncoded: string): string {
-  return body.replace(
-    /<([^>]+)>(https?:\/\/[^<]+|\.\.?\/[^<]+)<\/[^>]+>/gi,
-    (match: string, tag: string, url: string) => {
-      try {
-        let absolute: string;
-
-        if (url.startsWith("http")) {
-          absolute = url;
-        } else {
-          absolute = new URL(url, targetUrl).toString();
-        }
-
-        const encoded = encodeURIComponent(absolute);
-        return `<${tag}>/api/m3u8?url=${encoded}&ref=${refEncoded}</${tag}>`;
-      } catch {
-        return match;
-      }
-    }
-  );
-}
-
-function rewriteContent(
-  body: string,
-  targetUrl: URL,
-  ref: string,
-  contentType: string | null
-): string {
-  const refEncoded = encodeURIComponent(ref);
-  const lowerPath = targetUrl.pathname.toLowerCase();
-
-  if (contentType?.includes("vtt") || lowerPath.endsWith(".vtt")) {
-    return rewriteVTT(body, targetUrl, refEncoded);
-  }
-
-  if (
-    contentType?.includes("xml") ||
-    lowerPath.endsWith(".xml") ||
-    lowerPath.endsWith(".mpd")
-  ) {
-    return rewriteXML(body, targetUrl, refEncoded);
-  }
-
-  // Default: treat as M3U8/playlist
-  return rewriteM3U8(body, targetUrl, refEncoded);
-}
-
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const urlParam = searchParams.get("url");
-  const ref = searchParams.get("ref") || "https://your-anime-site.com/";
-
-  if (!urlParam) {
-    return new NextResponse("Missing url parameter", { status: 400 });
-  }
-
-  let target: URL;
-  try {
-    target = new URL(urlParam);
-  } catch {
-    return new NextResponse("Invalid URL format", { status: 400 });
-  }
-
-  // Security: Prevent proxy loops and access to local resources
-  const hostHeader = req.headers.get("host")?.split(":")[0];
-  if (
-    target.hostname === "localhost" ||
-    target.hostname === "127.0.0.1" ||
-    target.hostname === hostHeader
-  ) {
-    return new NextResponse("Access to local resources is not allowed", {
-      status: 403,
-    });
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 seconds
-
-    const upstream = await fetch(target.toString(), {
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Referer: ref,
-        Origin: new URL(ref).origin,
-        Accept: "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",
-        "Sec-Fetch-Mode": "cors",
-        "Cache-Control": "no-cache",
-      },
-      redirect: "follow",
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!upstream.ok) {
-      return new NextResponse(
-        `Upstream error: ${upstream.status} ${upstream.statusText}`,
-        {
-          status: upstream.status,
-          statusText: upstream.statusText,
-        }
-      );
-    }
-
-    const contentType = upstream.headers.get("content-type");
-    const contentLength = upstream.headers.get("content-length");
-
-    const headers = new Headers();
-
-    // CORS
-    headers.set("Access-Control-Allow-Origin", "*");
-    headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-    headers.set(
-      "Access-Control-Allow-Headers",
-      "Content-Type, Range, User-Agent"
-    );
-
-    if (contentType) headers.set("Content-Type", contentType);
-
-    // Cache headers
-    if (contentType?.includes("video") || contentType?.includes("audio")) {
-      headers.set("Cache-Control", "public, max-age=7200");
-    } else if (contentType?.includes("image")) {
-      headers.set("Cache-Control", "public, max-age=86400");
-    } else {
-      headers.set("Cache-Control", "public, max-age=300");
-    }
-
-    const treatAsText = isTextBasedContent(contentType, target);
-
-    // Text path: playlists, subtitles, XML manifests, etc – we rewrite URLs.
-    if (treatAsText && shouldProxyContent(contentType, target)) {
-      const text = await upstream.text();
-
-      if (!text) {
-        return new NextResponse("Empty content", { status: 500 });
-      }
-
-      const rewritten = rewriteContent(text, target, ref, contentType);
-      // IMPORTANT: do NOT forward upstream Content-Length here,
-      // because the rewritten body is a different size.
-      return new NextResponse(rewritten, { status: 200, headers });
-    }
-
-    // Binary path: segments, video, audio, images… we just pipe through.
-    if (contentLength) {
-      headers.set("Content-Length", contentLength);
-    }
-
-    const buffer = await upstream.arrayBuffer();
-
-    return new NextResponse(buffer, { status: 200, headers });
-  } catch (error: any) {
-    console.error("Proxy error:", error);
-
-    if (error?.name === "AbortError") {
-      return new NextResponse("Upstream timeout", { status: 504 });
-    }
-
-    return new NextResponse(error?.message || "Internal server error", {
-      status: 500,
-    });
-  }
-}
-
-export async function OPTIONS() {
+// CORS preflight handler (OPTIONS request)
+export function OPTIONS() {
   return new NextResponse(null, {
-    status: 200,
+    status: 204,
     headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Range, User-Agent",
-      "Access-Control-Max-Age": "86400",
-    },
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': '*'
+    }
   });
 }
 
-export async function HEAD(req: NextRequest) {
-  // Reuse GET logic to compute headers, then drop the body.
-  const res = await GET(req);
-  return new NextResponse(null, {
-    status: res.status,
-    headers: res.headers,
-  });
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const targetUrlParam = searchParams.get('url');
+  const refParam = searchParams.get('ref');
+  if (!targetUrlParam) {
+    return NextResponse.json({ error: 'Missing "url" query parameter' }, { status: 400 });
+  }
+
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(targetUrlParam);
+  } catch {
+    return NextResponse.json({ error: 'Invalid URL' }, { status: 400 });
+  }
+
+  // Basic SSRF protections: only allow http/https and block private/internal addresses
+  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+    return NextResponse.json({ error: 'Unsupported protocol' }, { status: 400 });
+  }
+  if (isBlockedHost(targetUrl.hostname)) {
+    console.warn('Blocked SSRF attempt to host:', targetUrl.hostname);
+    return NextResponse.json({ error: 'Forbidden host' }, { status: 403 });
+  }
+
+  const ext = targetUrl.pathname.split('.').pop()?.toLowerCase();
+  const isPlaylist = ext === 'm3u8' || ext === 'm3u';
+  const rangeHeader = request.headers.get('range');
+
+  // Only enable caching in production when Supabase envs are present
+  const cacheEnabled = process.env.NODE_ENV === 'production' && Boolean(supabaseAdmin);
+  const cacheKey = refParam ? `${targetUrl.href}::ref=${refParam}` : targetUrl.href;
+
+  // Avoid caching ranged/partial requests to prevent storing truncated blobs
+  const allowCache = cacheEnabled && !rangeHeader;
+
+  if (allowCache) {
+    try {
+      if (isPlaylist) {
+        const cachedContent = await getCachedPlaylist(cacheKey);
+        if (cachedContent !== null) {
+          console.log(`Cache hit (playlist): ${cacheKey}`);
+          return new NextResponse(cachedContent, {
+            status: 200,
+            headers: {
+              'Content-Type': inferContentType(ext),
+              'Access-Control-Allow-Origin': '*',
+              'Cache-Control': 'no-cache'
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Cache lookup error, proceeding to fetch:', err);
+    }
+  }
+
+  // If not cached, fetch the resource from the target URL
+  let upstreamRes: Response;
+  try {
+    // keep fetches from stalling forever; players can retry quickly on timeout
+    const timeoutMs = isPlaylist ? 8000 : 12000;
+    // If a referer was passed, forward it (and origin if parsable)
+    const forwardHeaders: Record<string, string> = {};
+    if (refParam) {
+      forwardHeaders['Referer'] = refParam;
+      try {
+        forwardHeaders['Origin'] = new URL(refParam).origin;
+      } catch {
+        // ignore invalid origin
+      }
+    }
+    upstreamRes = await fetchWithTimeout(targetUrl.href, {
+      method: 'GET',
+      headers: {
+        // Set a user agent and accept header for upstream request
+        'User-Agent': 'Mozilla/5.0 (Node.js fetch)',
+        'Accept': '*/*',
+        ...(rangeHeader ? { Range: rangeHeader } : {}),
+        ...forwardHeaders
+      }
+    }, timeoutMs);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Failed to fetch upstream URL:', err);
+    const status = message.includes('timed out') ? 504 : 502;
+    return NextResponse.json({ error: 'Failed to fetch the resource', details: message }, { status });
+  }
+
+  if (!upstreamRes.ok) {
+    // Forward the upstream error status (without exposing full response body for safety)
+    return NextResponse.json(
+      { error: `Upstream error: ${upstreamRes.status} ${upstreamRes.statusText}` },
+      { status: upstreamRes.status }
+    );
+  }
+
+  const contentType = upstreamRes.headers.get('Content-Type') || inferContentType(ext);
+
+  if (isPlaylist) {
+    // Handle playlist files (.m3u8) as text
+    let playlistText: string;
+    try {
+      playlistText = await upstreamRes.text();
+    } catch (err) {
+      console.error('Error reading playlist text:', err);
+      return NextResponse.json({ error: 'Error reading upstream content' }, { status: 500 });
+    }
+    // Rewrite URLs in the playlist to proxy through this API
+    const rewrittenPlaylist = rewritePlaylist(playlistText, targetUrl, refParam);
+    if (allowCache) {
+      // Cache the rewritten playlist content for future requests
+      try {
+        await setCachedPlaylist(cacheKey, rewrittenPlaylist);
+      } catch (err) {
+        console.error('Failed to cache playlist content:', err);
+      }
+    }
+    return new NextResponse(rewrittenPlaylist, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache'
+      }
+    });
+  } else {
+    // Handle segment or other binary file
+    const upstreamBody = upstreamRes.body;
+    if (!upstreamBody) {
+      return NextResponse.json({ error: 'No content in upstream response' }, { status: 500 });
+    }
+    const responseHeaders: Record<string, string> = {
+      'Content-Type': contentType,
+      'Access-Control-Allow-Origin': '*'
+    };
+
+    // Forward range-related headers when present
+    const upstreamRange = upstreamRes.headers.get('Content-Range');
+    const upstreamAcceptRanges = upstreamRes.headers.get('Accept-Ranges');
+    const upstreamLength = upstreamRes.headers.get('Content-Length');
+    if (upstreamRange) responseHeaders['Content-Range'] = upstreamRange;
+    if (upstreamAcceptRanges) responseHeaders['Accept-Ranges'] = upstreamAcceptRanges;
+    if (upstreamLength) responseHeaders['Content-Length'] = upstreamLength;
+
+    // Set caching headers only for full-body responses
+    if (!rangeHeader) {
+      responseHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
+    }
+
+    // Stream the upstream response directly to the client (segments not cached in Supabase)
+    return new NextResponse(upstreamBody, {
+      status: upstreamRes.status,
+      headers: responseHeaders
+    });
+  }
 }

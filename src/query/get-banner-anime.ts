@@ -1,6 +1,6 @@
 import { GET_ANIME_BANNER } from "@/constants/query-keys";
 import { api } from "@/lib/api";
-import { useQuery } from "react-query";
+import { useQuery } from "@tanstack/react-query";
 
 interface IAnimeBanner {
   Media: {
@@ -9,7 +9,10 @@ interface IAnimeBanner {
   };
 }
 
-const getAnimeBanner = async (anilistID: number) => {
+export const animeBannerQueryKey = (anilistID: number) =>
+  [GET_ANIME_BANNER, anilistID] as const;
+
+export const getAnimeBanner = async (anilistID: number) => {
   const res = await api.post("https://graphql.anilist.co", {
     query: `
       query ($id: Int) {
@@ -29,7 +32,9 @@ const getAnimeBanner = async (anilistID: number) => {
 export const useGetAnimeBanner = (anilistID: number) => {
   return useQuery({
     queryFn: () => getAnimeBanner(anilistID),
-    queryKey: [GET_ANIME_BANNER, anilistID],
+    queryKey: animeBannerQueryKey(anilistID),
     enabled: !!anilistID,
+    staleTime: 1000 * 60 * 60 * 24,
+    gcTime: 1000 * 60 * 60 * 24,
   });
 };

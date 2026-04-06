@@ -1,6 +1,9 @@
 // src/app/api/episode/sources/route.ts
 
 import { getHiAnimeScraper } from "@/lib/hianime";
+import { getGogoanimeEpisodeSource } from "@/lib/gogoanime";
+import { isGogoBackupServerName } from "@/lib/provider-constants";
+import { getCachedValue, setCachedValue } from "@/lib/hot-cache";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
 export const runtime = "nodejs"; // important: aniwatch uses worker_threads, needs Node runtime
@@ -38,16 +41,20 @@ export async function GET(req: Request) {
       | "raw"
       | null;
     const serverParam = url.searchParams.get("server");
+    const episodeNumberParam = url.searchParams.get("episodeNumber");
 
     const episodeId = sanitize(episodeIdRaw);
     const category: "sub" | "dub" | "raw" = categoryParam || "sub";
     const server = serverParam || "hd-1";
+    const episodeNumber = episodeNumberParam ? Number(episodeNumberParam) : NaN;
+    const isGogoRequest = isGogoBackupServerName(server);
 
     console.debug("[EPISODE_SOURCES] incoming params:", {
       episodeIdRaw,
       episodeId,
       category,
       server,
+      episodeNumber,
     });
 
     if (!episodeId) {
@@ -59,6 +66,15 @@ export async function GET(req: Request) {
 
     const compositeKey = makeKey(episodeId, category, server);
     const now = Date.now();
+    const hotCacheKey = `episode-source:v1:${compositeKey}`;
+
+    const hotCached = await getCachedValue<any>({
+      key: hotCacheKey,
+    });
+    if (hotCached) {
+      console.debug("[EPISODE_SOURCES] returning hot cached data", compositeKey);
+      return Response.json({ data: hotCached, fromCache: true, tier: "hot" });
+    }
 
     // 1) Try Supabase cache (table: episode_sources) using compositeKey
     let cached: any = null;
@@ -88,6 +104,13 @@ export async function GET(req: Request) {
       const ageSeconds = (now - fetchedAtMs) / 1000;
 
       if (ageSeconds < CACHE_TTL_SECONDS) {
+        await setCachedValue(
+          {
+            key: hotCacheKey,
+            ttlSeconds: CACHE_TTL_SECONDS,
+          },
+          cached.data,
+        );
         console.debug(
           "[EPISODE_SOURCES] returning cached data",
           compositeKey,
@@ -104,30 +127,134 @@ export async function GET(req: Request) {
     }
 
     // 2) Scrape fresh data
-    const scraper = await getHiAnimeScraper();
-    if (!scraper) {
-      console.error("[EPISODE_SOURCES] HiAnime scraper unavailable");
-      return Response.json({ error: "scraper unavailable" }, { status: 503 });
-    }
-
     let data: any;
-    try {
-      // IMPORTANT: pass server + category to match aniwatch signature:
-      // getEpisodeSources(id, server?, category?)
-      data = await scraper.getEpisodeSources(episodeId, server, category);
-    } catch (scrapeErr: any) {
-      console.error("[EPISODE_SOURCES] scraper.getEpisodeSources error:", {
-        episodeId,
+    let shouldPersistToCache = true;
+
+    if (isGogoRequest) {
+      if (!Number.isFinite(episodeNumber) || episodeNumber <= 0) {
+        return Response.json(
+          { error: "episodeNumber is required for the gogoanime backup provider" },
+          { status: 400 },
+        );
+      }
+
+      const resolved = await getGogoanimeEpisodeSource({
+        primaryAnimeId: episodeId.split("?")[0],
+        episodeNumber,
         category,
-        server,
-        message: scrapeErr?.message,
-        stack: scrapeErr?.stack,
       });
-      const message = scrapeErr?.message || "scrape failed";
-      return Response.json(
-        { error: `scraper error: ${message}` },
-        { status: 502 },
-      );
+
+      data = {
+        headers: {
+          Referer: resolved.episodePageUrl,
+        },
+        tracks: [],
+        intro: { start: 0, end: 0 },
+        outro: { start: 0, end: 0 },
+        sources: [],
+        anilistID: 0,
+        malID: 0,
+        provider: resolved.provider,
+        iframeUrl: resolved.iframeUrl,
+      };
+    } else {
+      const scraper = await getHiAnimeScraper();
+      if (!scraper) {
+        console.error("[EPISODE_SOURCES] HiAnime scraper unavailable");
+        return Response.json({ error: "scraper unavailable" }, { status: 503 });
+      }
+
+      try {
+        // IMPORTANT: pass server + category to match aniwatch signature:
+        // getEpisodeSources(id, server?, category?)
+        data = await scraper.getEpisodeSources(episodeId, server, category);
+      } catch (scrapeErr: any) {
+        console.error("[EPISODE_SOURCES] scraper.getEpisodeSources error:", {
+          episodeId,
+          category,
+          server,
+          message: scrapeErr?.message,
+          stack: scrapeErr?.stack,
+        });
+
+        if (Number.isFinite(episodeNumber) && episodeNumber > 0) {
+          try {
+            const resolved = await getGogoanimeEpisodeSource({
+              primaryAnimeId: episodeId.split("?")[0],
+              episodeNumber,
+              category,
+            });
+
+            shouldPersistToCache = false;
+            data = {
+              headers: {
+                Referer: resolved.episodePageUrl,
+              },
+              tracks: [],
+              intro: { start: 0, end: 0 },
+              outro: { start: 0, end: 0 },
+              sources: [],
+              anilistID: 0,
+              malID: 0,
+              provider: resolved.provider,
+              iframeUrl: resolved.iframeUrl,
+              fallbackFromServer: server,
+              fallbackReason: scrapeErr?.message || "aniwatch scrape failed",
+            };
+          } catch (gogoErr: any) {
+            console.error("[EPISODE_SOURCES] gogo fallback error:", {
+              episodeId,
+              category,
+              server,
+              message: gogoErr?.message,
+              stack: gogoErr?.stack,
+            });
+            const message = scrapeErr?.message || "scrape failed";
+            return Response.json(
+              { error: `scraper error: ${message}` },
+              { status: 502 },
+            );
+          }
+        } else {
+          const message = scrapeErr?.message || "scrape failed";
+          return Response.json(
+            { error: `scraper error: ${message}` },
+            { status: 502 },
+          );
+        }
+      }
+
+      if (!data?.iframeUrl && (!Array.isArray(data?.sources) || !data.sources.length)) {
+        if (!Number.isFinite(episodeNumber) || episodeNumber <= 0) {
+          return Response.json(
+            { error: "No playable sources were found for this episode" },
+            { status: 502 },
+          );
+        }
+
+        const resolved = await getGogoanimeEpisodeSource({
+          primaryAnimeId: episodeId.split("?")[0],
+          episodeNumber,
+          category,
+        });
+
+        shouldPersistToCache = false;
+        data = {
+          headers: {
+            Referer: resolved.episodePageUrl,
+          },
+          tracks: [],
+          intro: { start: 0, end: 0 },
+          outro: { start: 0, end: 0 },
+          sources: [],
+          anilistID: 0,
+          malID: 0,
+          provider: resolved.provider,
+          iframeUrl: resolved.iframeUrl,
+          fallbackFromServer: server,
+          fallbackReason: "aniwatch returned no playable sources",
+        };
+      }
     }
 
     // 3) Upsert into Supabase `episode_sources` table using compositeKey as unique key
@@ -140,26 +267,36 @@ export async function GET(req: Request) {
       fetchedAt: new Date().toISOString(),
     };
 
-    try {
-      const { error } = await supabaseAdmin
-        .from("episode_sources")
-        .upsert(recordPayload, { onConflict: "compositeKey" });
+    if (shouldPersistToCache) {
+      try {
+        const { error } = await supabaseAdmin
+          .from("episode_sources")
+          .upsert(recordPayload, { onConflict: "compositeKey" });
 
-      if (error) {
-        console.warn(
-          "[EPISODE_SOURCES] Supabase upsert error:",
-          error.message || error,
+        if (error) {
+          console.warn(
+            "[EPISODE_SOURCES] Supabase upsert error:",
+            error.message || error,
+          );
+        } else {
+          console.debug("[EPISODE_SOURCES] cache upserted:", compositeKey);
+        }
+      } catch (err) {
+        console.error(
+          "[EPISODE_SOURCES] Failed to upsert episode_sources into Supabase:",
+          err,
         );
-      } else {
-        console.debug("[EPISODE_SOURCES] cache upserted:", compositeKey);
+        // Still return data even if cache save fails
       }
-    } catch (err) {
-      console.error(
-        "[EPISODE_SOURCES] Failed to upsert episode_sources into Supabase:",
-        err,
-      );
-      // Still return data even if cache save fails
     }
+
+    await setCachedValue(
+      {
+        key: hotCacheKey,
+        ttlSeconds: CACHE_TTL_SECONDS,
+      },
+      data,
+    );
 
     return Response.json({ data, fromCache: false });
   } catch (err: any) {
