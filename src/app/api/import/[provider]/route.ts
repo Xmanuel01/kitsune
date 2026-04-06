@@ -1,4 +1,5 @@
 import { AnilistMediaList } from "@/types/anilist-animes";
+import { getGogoSearchSuggestions } from "@/lib/gogoanime-catalog";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(
@@ -35,15 +36,7 @@ export async function POST(
   type ProviderStatus = keyof typeof status;
   type StatusType = keyof (typeof status)[ProviderStatus];
 
-  // loop over each items in body
-  // and fetch corresponding anime from the hianime
   const mappedAnimes = [];
-
-  const mod = await import("@/lib/hianime");
-  const { hianime } = mod;
-  if (!hianime) {
-    return NextResponse.json({ error: "scraper unavailable" }, { status: 503 });
-  }
 
   for (const item of animeList) {
     for (const entry of item.entries) {
@@ -53,7 +46,7 @@ export async function POST(
       if (!title || !title.english) {
         continue; // Skip if title is not available
       }
-      const anime = await hianime.searchSuggestions(title.english);
+      const anime = await getGogoSearchSuggestions(title.english);
       if (anime.suggestions.length > 0) {
         mappedAnimes.push({
           id: anime.suggestions[0].id,

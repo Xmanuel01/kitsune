@@ -1,3 +1,8 @@
+import { getCachedAnimeSchedule } from "@/lib/anime-data";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const { searchParams } = url;
@@ -7,11 +12,15 @@ export async function GET(request: Request) {
     : new Date().toISOString().split("T")[0];
 
   try {
-    const mod = await import("@/lib/hianime");
-    const { hianime } = mod;
-    if (!hianime) throw new Error('hianime module unavailable');
-    const data = await hianime.getEstimatedSchedule(formattedDate);
-    return Response.json({ data });
+    const data = await getCachedAnimeSchedule(formattedDate);
+    return Response.json(
+      { data },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=600, stale-while-revalidate=1800",
+        },
+      },
+    );
   } catch (err) {
     console.log(err);
     return Response.json({ error: "something went wrong" }, { status: 500 });

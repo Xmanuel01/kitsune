@@ -1,6 +1,15 @@
 import { readThroughCache } from "@/lib/hot-cache";
+import {
+  getGogoAnimeDetails,
+  getGogoAnimeEpisodes,
+  getGogoAnimeSchedule,
+  getGogoHomePageData,
+  getGogoSearchSuggestions,
+  searchGogoAnime,
+} from "@/lib/gogoanime-catalog";
 import { IAnimeData, SearchAnimeParams } from "@/types/anime";
 import { IAnimeDetails } from "@/types/anime-details";
+import { IAnimeSchedule } from "@/types/anime-schedule";
 import { IEpisodes } from "@/types/episodes";
 
 type AnimeBanner = {
@@ -28,28 +37,13 @@ function stableStringify(value: unknown): string {
     .join(",")}}`;
 }
 
-async function getHiAnime() {
-  const mod = await import("@/lib/hianime");
-  if (!mod?.getHiAnimeScraper) {
-    throw new Error("hianime module unavailable");
-  }
-  const scraper = await mod.getHiAnimeScraper();
-  if (!scraper) {
-    throw new Error("hianime scraper unavailable");
-  }
-  return scraper;
-}
-
 export async function getCachedHomePageData() {
   return readThroughCache<IAnimeData>(
     {
       key: "home-page:v1",
       ttlSeconds: 60 * 5,
     },
-    async () => {
-      const hianime = await getHiAnime();
-      return hianime.getHomePage();
-    },
+    () => getGogoHomePageData(),
   );
 }
 
@@ -59,10 +53,7 @@ export async function getCachedAnimeDetails(animeId: string) {
       key: `anime-details:v1:${animeId}`,
       ttlSeconds: 60 * 30,
     },
-    async () => {
-      const hianime = await getHiAnime();
-      return hianime.getInfo(animeId);
-    },
+    () => getGogoAnimeDetails(animeId),
   );
 }
 
@@ -72,10 +63,7 @@ export async function getCachedAnimeEpisodes(animeId: string) {
       key: `anime-episodes:v1:${animeId}`,
       ttlSeconds: 60 * 30,
     },
-    async () => {
-      const hianime = await getHiAnime();
-      return hianime.getEpisodes(animeId);
-    },
+    () => getGogoAnimeEpisodes(animeId),
   );
 }
 
@@ -86,18 +74,7 @@ export async function getCachedSearchResults(params: SearchAnimeParams) {
       key,
       ttlSeconds: 60 * 5,
     },
-    async () => {
-      const hianime = await getHiAnime();
-      return hianime.search(params.q, params.page, {
-        type: params.type,
-        status: params.status,
-        rated: params.rated,
-        season: params.season,
-        language: params.language,
-        sort: params.sort,
-        genres: params.genres,
-      });
-    },
+    () => searchGogoAnime(params),
   );
 }
 
@@ -107,10 +84,17 @@ export async function getCachedSearchSuggestions(query: string) {
       key: `anime-search-suggestions:v1:${query.trim().toLowerCase()}`,
       ttlSeconds: 60 * 5,
     },
-    async () => {
-      const hianime = await getHiAnime();
-      return hianime.searchSuggestions(query);
+    () => getGogoSearchSuggestions(query),
+  );
+}
+
+export async function getCachedAnimeSchedule(date?: string) {
+  return readThroughCache<IAnimeSchedule>(
+    {
+      key: `anime-schedule:v1:${date || "today"}`,
+      ttlSeconds: 60 * 10,
     },
+    () => getGogoAnimeSchedule(date),
   );
 }
 

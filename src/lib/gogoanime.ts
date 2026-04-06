@@ -1,5 +1,5 @@
 import { load } from "cheerio";
-import { hianime } from "@/lib/hianime";
+import { resolveGogoSeriesUrlFromId } from "@/lib/gogoanime-catalog";
 
 type EpisodeCategory = "sub" | "dub" | "raw";
 
@@ -148,20 +148,6 @@ function scoreCandidate(
   return score;
 }
 
-async function resolveAnimeTitle(primaryAnimeId: string) {
-  try {
-    const info = await hianime.getInfo(primaryAnimeId);
-    const title =
-      info?.anime?.info?.name ||
-      info?.anime?.info?.jname ||
-      info?.anime?.info?.description ||
-      null;
-    return typeof title === "string" ? title : null;
-  } catch {
-    return null;
-  }
-}
-
 function parseSearchResults(html: string, query: string, category: EpisodeCategory) {
   const $ = load(html);
   const seen = new Set<string>();
@@ -191,17 +177,22 @@ async function resolveSeriesUrl(
   primaryAnimeId: string,
   category: EpisodeCategory,
 ) {
-  const primaryTitle = await resolveAnimeTitle(primaryAnimeId);
-  const fallbackTitle = slugToTitle(primaryAnimeId);
+  if (/^https?:\/\/[^/]+\/series\//i.test(primaryAnimeId)) {
+    return {
+      title: slugToTitle(primaryAnimeId),
+      url: await resolveGogoSeriesUrlFromId(primaryAnimeId),
+      score: 999,
+    };
+  }
+
+  const fallbackTitle = slugToTitle(primaryAnimeId.replace(/^https?:\/\/[^/]+\//i, ""));
   const queries =
     category === "dub"
       ? [
-          primaryTitle ? `${primaryTitle} english dubbed` : null,
-          primaryTitle,
           `${fallbackTitle} english dubbed`,
           fallbackTitle,
         ]
-      : [primaryTitle, fallbackTitle];
+      : [fallbackTitle];
 
   const dedupedQueries = Array.from(
     new Set(queries.filter((value): value is string => Boolean(value && value.trim()))),
@@ -322,24 +313,29 @@ export async function getGogoanimeEpisodeSource(options: {
   primaryAnimeId: string;
   episodeNumber: number;
   category: EpisodeCategory;
+  episodePageUrl?: string;
 }) {
-  const { primaryAnimeId, episodeNumber, category } = options;
-  const cacheKey = `${primaryAnimeId}::${episodeNumber}::${category}`;
+  const { primaryAnimeId, episodeNumber, category, episodePageUrl } = options;
+  const cacheKey = `${episodePageUrl || primaryAnimeId}::${episodeNumber}::${category}`;
   const cached = getCachedValue(resolutionCache, cacheKey);
   if (cached) return cached;
 
-  const series = await resolveSeriesUrl(primaryAnimeId, category);
-  if (!series) {
-    throw new Error("No matching gogoanime series was found");
+  let resolvedEpisodePageUrl: string | undefined = episodePageUrl;
+  if (!resolvedEpisodePageUrl) {
+    const series = await resolveSeriesUrl(primaryAnimeId, category);
+    if (!series) {
+      throw new Error("No matching gogoanime series was found");
+    }
+
+    const seriesHtml = await fetchHtml(series.url);
+    resolvedEpisodePageUrl =
+      parseEpisodePageUrl(seriesHtml, episodeNumber) || undefined;
+    if (!resolvedEpisodePageUrl) {
+      throw new Error(`Episode ${episodeNumber} was not found on gogoanime`);
+    }
   }
 
-  const seriesHtml = await fetchHtml(series.url);
-  const episodePageUrl = parseEpisodePageUrl(seriesHtml, episodeNumber);
-  if (!episodePageUrl) {
-    throw new Error(`Episode ${episodeNumber} was not found on gogoanime`);
-  }
-
-  const episodeHtml = await fetchHtml(episodePageUrl);
+  const episodeHtml = await fetchHtml(resolvedEpisodePageUrl);
   const { featureImage, options: playerOptions, postId } = parsePlayerOptions(
     episodeHtml,
     category,
@@ -356,7 +352,7 @@ export async function getGogoanimeEpisodeSource(options: {
   const resolved = {
     iframeUrl: buildPlayerUrl(preferred, featureImage, postId),
     serverLabel: preferred.label,
-    episodePageUrl,
+    episodePageUrl: resolvedEpisodePageUrl,
     provider: "gogoanime" as const,
   };
 

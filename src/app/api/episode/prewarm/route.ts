@@ -1,5 +1,5 @@
 // src/app/api/episode/prewarm/route.ts
-import { getHiAnimeScraper } from "@/lib/hianime";
+import { getAniwatchScraper } from "@/lib/aniwatch";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
 export const runtime = "nodejs";
@@ -33,9 +33,9 @@ async function prewarmEpisodes(
   server: string,
 ) {
   try {
-    const scraper = await getHiAnimeScraper();
+    const scraper = await getAniwatchScraper();
     if (!scraper) {
-      console.error("[EPISODE_PREWARM] HiAnime scraper unavailable");
+      console.error("[EPISODE_PREWARM] Aniwatch scraper unavailable");
       return;
     }
 
@@ -44,6 +44,7 @@ async function prewarmEpisodes(
     for (const rawId of episodeIds) {
       const episodeId = sanitize(rawId);
       if (!episodeId) continue;
+      if (/^https?:\/\/[^/]*gogoanime\.by\//i.test(episodeId)) continue;
 
       const key = makeKey(episodeId, category, server);
 

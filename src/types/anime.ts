@@ -14,6 +14,7 @@ export interface IAnimeData {
 export interface LatestCompletedAnime extends IAnime {
   duration?: string;
   rating?: null;
+  episodeId?: string;
 }
 
 export interface Episodes {

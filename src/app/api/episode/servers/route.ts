@@ -1,6 +1,6 @@
 // src/app/api/episode/servers/route.ts
 
-import { getHiAnimeScraper } from "@/lib/hianime";
+import { getAniwatchScraper } from "@/lib/aniwatch";
 import { GOGOANIME_BACKUP_SERVER_NAME } from "@/lib/provider-constants";
 
 export const runtime = "nodejs";
@@ -38,6 +38,10 @@ function withBackupServers(data: any) {
     sub: appendBackup(data.sub),
     dub: appendBackup(data.dub),
   };
+}
+
+function isDirectGogoEpisodeId(value: string) {
+  return /^https?:\/\/[^/]*gogoanime\.by\//i.test(value) && !/\/series\//i.test(value);
 }
 
 // Sanitize incoming id: decode if needed and only allow base + optional '?ep=digits'
@@ -87,12 +91,38 @@ export async function GET(req: Request) {
       return Response.json({ data: withBackupServers(cached.data), fromCache: true });
     }
 
-    const scraper = await getHiAnimeScraper();
+    if (isDirectGogoEpisodeId(animeEpisodeId)) {
+      const episodeNoMatch =
+        animeEpisodeId.match(/episode-(\d+)/i) ||
+        animeEpisodeId.match(/-ep(?:isode)?-?(\d+)/i);
+      const episodeNo = episodeNoMatch?.[1] || "";
+
+      const data = {
+        episodeId: animeEpisodeId,
+        episodeNo,
+        sub: [{ serverId: -1, serverName: GOGOANIME_BACKUP_SERVER_NAME }],
+        dub: [],
+        raw: [],
+      };
+
+      memoryCache.set(cacheKey, { data, fetchedAt: now });
+      return Response.json({ data, fromCache: false });
+    }
+
+    const scraper = await getAniwatchScraper();
     if (!scraper) {
-      console.error("[EPISODE_SERVERS] HiAnime scraper unavailable");
+      console.error("[EPISODE_SERVERS] Aniwatch scraper unavailable");
       return Response.json(
-        { error: "scraper unavailable" },
-        { status: 503 },
+        {
+          data: {
+            episodeId: animeEpisodeId,
+            episodeNo: "",
+            sub: [{ serverId: -1, serverName: GOGOANIME_BACKUP_SERVER_NAME }],
+            dub: [],
+            raw: [],
+          },
+        },
+        { status: 200 },
       );
     }
 

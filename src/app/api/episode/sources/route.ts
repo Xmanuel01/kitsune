@@ -1,6 +1,6 @@
 // src/app/api/episode/sources/route.ts
 
-import { getHiAnimeScraper } from "@/lib/hianime";
+import { getAniwatchScraper } from "@/lib/aniwatch";
 import { getGogoanimeEpisodeSource } from "@/lib/gogoanime";
 import { isGogoBackupServerName } from "@/lib/provider-constants";
 import { getCachedValue, setCachedValue } from "@/lib/hot-cache";
@@ -30,6 +30,9 @@ const sanitize = (raw?: string | null) => {
   if (!m) return decoded.split("?")[0];
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
 };
+
+const isDirectGogoEpisodeId = (value: string) =>
+  /^https?:\/\/[^/]*gogoanime\.by\//i.test(value) && !/\/series\//i.test(value);
 
 export async function GET(req: Request) {
   try {
@@ -131,7 +134,8 @@ export async function GET(req: Request) {
     let shouldPersistToCache = true;
 
     if (isGogoRequest) {
-      if (!Number.isFinite(episodeNumber) || episodeNumber <= 0) {
+      const gogoEpisodeUrl = isDirectGogoEpisodeId(episodeId) ? episodeId : undefined;
+      if (!gogoEpisodeUrl && (!Number.isFinite(episodeNumber) || episodeNumber <= 0)) {
         return Response.json(
           { error: "episodeNumber is required for the gogoanime backup provider" },
           { status: 400 },
@@ -142,6 +146,7 @@ export async function GET(req: Request) {
         primaryAnimeId: episodeId.split("?")[0],
         episodeNumber,
         category,
+        episodePageUrl: gogoEpisodeUrl,
       });
 
       data = {
@@ -158,9 +163,9 @@ export async function GET(req: Request) {
         iframeUrl: resolved.iframeUrl,
       };
     } else {
-      const scraper = await getHiAnimeScraper();
+      const scraper = await getAniwatchScraper();
       if (!scraper) {
-        console.error("[EPISODE_SOURCES] HiAnime scraper unavailable");
+        console.error("[EPISODE_SOURCES] Aniwatch scraper unavailable");
         return Response.json({ error: "scraper unavailable" }, { status: 503 });
       }
 
@@ -183,6 +188,7 @@ export async function GET(req: Request) {
               primaryAnimeId: episodeId.split("?")[0],
               episodeNumber,
               category,
+              episodePageUrl: isDirectGogoEpisodeId(episodeId) ? episodeId : undefined,
             });
 
             shouldPersistToCache = false;
@@ -236,6 +242,7 @@ export async function GET(req: Request) {
           primaryAnimeId: episodeId.split("?")[0],
           episodeNumber,
           category,
+          episodePageUrl: isDirectGogoEpisodeId(episodeId) ? episodeId : undefined,
         });
 
         shouldPersistToCache = false;
