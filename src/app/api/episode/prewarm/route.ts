@@ -44,7 +44,6 @@ async function prewarmEpisodes(
     for (const rawId of episodeIds) {
       const episodeId = sanitize(rawId);
       if (!episodeId) continue;
-      if (/^https?:\/\/[^/]*gogoanime\.by\//i.test(episodeId)) continue;
 
       const key = makeKey(episodeId, category, server);
 

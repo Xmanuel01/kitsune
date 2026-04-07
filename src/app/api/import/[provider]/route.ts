@@ -1,5 +1,5 @@
 import { AnilistMediaList } from "@/types/anilist-animes";
-import { getGogoSearchSuggestions } from "@/lib/gogoanime-catalog";
+import { getAniwatchSearchSuggestions } from "@/lib/aniwatch-catalog";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(
@@ -46,7 +46,7 @@ export async function POST(
       if (!title || !title.english) {
         continue; // Skip if title is not available
       }
-      const anime = await getGogoSearchSuggestions(title.english);
+      const anime = await getAniwatchSearchSuggestions(title.english);
       if (anime.suggestions.length > 0) {
         mappedAnimes.push({
           id: anime.suggestions[0].id,

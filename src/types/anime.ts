@@ -13,7 +13,7 @@ export interface IAnimeData {
 
 export interface LatestCompletedAnime extends IAnime {
   duration?: string;
-  rating?: null;
+  rating?: string | null;
   episodeId?: string;
 }
 
@@ -55,6 +55,7 @@ export interface SpotlightAnime {
   name: string;
   description: string;
   poster: string;
+  bannerImage?: string | null;
   jname: string;
   episodes: Episodes;
   type: Type;

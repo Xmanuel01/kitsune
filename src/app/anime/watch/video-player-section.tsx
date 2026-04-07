@@ -4,10 +4,10 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useAnimeStore } from "@/store/anime-store";
-
+import Image from "next/image";
 import { IWatchedAnime } from "@/types/watched-anime";
 import KitsunePlayer from "@/components/kitsune-player";
-import { AlertCircleIcon, Captions, Mic } from "lucide-react";
+import { Captions, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/store/auth-store";
@@ -16,8 +16,77 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRouter } from "next/navigation";
 import { ROUTES } from "@/constants/routes";
 import { useGetAllEpisodes } from "@/query/get-all-episodes";
-import { GOGOANIME_BACKUP_SERVER_NAME } from "@/lib/provider-constants";
 import { useGetEpisodePlayerData } from "@/query/get-episode-player-data";
+import loadingImage from "@/assets/genkai.gif";
+import styles from "@/components/player.module.css";
+
+const SERVER_DISPLAY_NAMES: Record<string, string> = {
+  vidsrc: "Kitsune",
+  megacloud: "Tora",
+  "t-cloud": "Ryuu",
+};
+
+function getServerDisplayName(serverName: string) {
+  return SERVER_DISPLAY_NAMES[String(serverName || "").toLowerCase()] || serverName;
+}
+
+function BrandedPlayerFallback({
+  src,
+  title,
+  poster,
+}: {
+  src?: string;
+  title: string;
+  poster?: string;
+}) {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    setIsLoaded(false);
+  }, [src]);
+
+  return (
+    <div className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden">
+      {src ? (
+        <iframe
+          title={title}
+          src={src}
+          width="100%"
+          height="100%"
+          allow="autoplay; encrypted-media; picture-in-picture"
+          allowFullScreen
+          className={`relative z-10 h-full w-full transition-opacity duration-300 ${
+            isLoaded ? "opacity-100" : "opacity-0"
+          }`}
+          onLoad={() => setIsLoaded(true)}
+        />
+      ) : null}
+
+      <div
+        className={`absolute inset-0 z-20 transition-opacity duration-300 ${
+          isLoaded ? "pointer-events-none opacity-0" : "opacity-100"
+        }`}
+      >
+        <div
+          className={`${styles.loadingBackground} relative h-full w-full`}
+          style={
+            poster ? ({ ["--bg-image" as any]: `url(${poster})` } as React.CSSProperties) : undefined
+          }
+        >
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-md" />
+          <Image
+            src={loadingImage.src}
+            alt="Loading player"
+            width={60}
+            height={60}
+            priority
+            className={`${styles.loadingImage} relative z-10`}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const VideoPlayerSection: React.FC = () => {
   const { selectedEpisode, anime, setSelectedEpisode } = useAnimeStore();
@@ -103,8 +172,6 @@ const VideoPlayerSection: React.FC = () => {
     return sortedEpisodes[currentIdx + 1] || null;
   }, [sortedEpisodes, selectedEpisode]);
 
-  const [playerInstance, setPlayerInstance] = useState<any>(null);
-
   const goToEpisode = useCallback(
     (episodeId: string | undefined) => {
       if (!episodeId || !animeId) return;
@@ -115,18 +182,24 @@ const VideoPlayerSection: React.FC = () => {
   );
 
   useEffect(() => {
-    if (!playerInstance) return;
+    if (typeof window === "undefined") return;
 
-    const handleEnded = () => {
-      if (!autoNext || !nextEpisode?.episodeId) return;
-      goToEpisode(nextEpisode.episodeId);
+    const unlockAutoplay = () => {
+      try {
+        window.sessionStorage.setItem("kitsune-autoplay-unlocked", "1");
+      } catch {
+        // ignore
+      }
     };
 
-    playerInstance.on("video:ended", handleEnded);
+    window.addEventListener("pointerdown", unlockAutoplay, { passive: true });
+    window.addEventListener("keydown", unlockAutoplay);
+
     return () => {
-      playerInstance.off("video:ended", handleEnded);
+      window.removeEventListener("pointerdown", unlockAutoplay);
+      window.removeEventListener("keydown", unlockAutoplay);
     };
-  }, [autoNext, nextEpisode?.episodeId, goToEpisode, playerInstance]);
+  }, []);
 
   const [watchedDetails, setWatchedDetails] = useState<Array<IWatchedAnime>>(
     () => {
@@ -230,10 +303,59 @@ const VideoPlayerSection: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeData, selectedEpisode, auth]);
 
+  const sources = episodeData?.sources ?? [];
+  const rawSubServers = useMemo(() => serversData?.sub ?? [], [serversData?.sub]);
+  const rawDubServers = useMemo(() => serversData?.dub ?? [], [serversData?.dub]);
+  const animeSubCount = anime?.anime?.info?.stats?.episodes?.sub ?? 0;
+  const animeDubCount = anime?.anime?.info?.stats?.episodes?.dub ?? 0;
+  const hasSubVersion = animeSubCount > 0 || rawSubServers.length > 0;
+  const hasDubVersion = animeDubCount > 0 || rawDubServers.length > 0;
+  const subServers = useMemo(
+    () => (hasSubVersion ? rawSubServers : []),
+    [hasSubVersion, rawSubServers],
+  );
+  const dubServers = useMemo(
+    () =>
+      hasDubVersion
+        ? (rawDubServers.length ? rawDubServers : rawSubServers).map((server) => ({
+            ...server,
+          }))
+        : [],
+    [hasDubVersion, rawDubServers, rawSubServers],
+  );
+
+  // Extract ?ep=... safely for fallback iframe
+  const episodeIdRaw = serversData?.episodeId;
+  const epParam =
+    typeof episodeIdRaw === "string" && episodeIdRaw.includes("?ep=")
+      ? episodeIdRaw.split("?ep=")[1]
+      : undefined;
+  const animePoster = anime?.anime?.info?.poster;
+
+  useEffect(() => {
+    if (hasDubVersion || hasSubVersion) {
+      if (key === "dub" && !hasDubVersion && hasSubVersion) {
+        changeServer(serverName || subServers[0]?.serverName || "hd-1", "sub");
+      } else if (key === "sub" && !hasSubVersion && hasDubVersion) {
+        changeServer(serverName || dubServers[0]?.serverName || "hd-1", "dub");
+      }
+    }
+  }, [
+    dubServers,
+    hasDubVersion,
+    hasSubVersion,
+    key,
+    serverName,
+    subServers,
+  ]);
+
   // Normal loading skeleton
   if (isLoading || (!episodeData && !isEpisodeDataError)) {
     return (
-      <div className="h-auto aspect-video lg:max-h-[calc(100vh-150px)] min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] w-full animate-pulse bg-slate-700 rounded-md" />
+      <BrandedPlayerFallback
+        title="Loading player"
+        poster={animePoster}
+      />
     );
   }
 
@@ -242,84 +364,47 @@ const VideoPlayerSection: React.FC = () => {
       <Alert variant="destructive" className="text-red-400">
         <AlertTitle className="font-bold">Episode Unavailable</AlertTitle>
         <AlertDescription>
-          We could not load this episode source right now. Try another server,
-          including the {GOGOANIME_BACKUP_SERVER_NAME} backup option.
+          We could not load this episode source right now. Try another
+          Aniwatch server.
         </AlertDescription>
       </Alert>
     );
   }
 
-  // Safely derive arrays
-  const sources = episodeData?.sources ?? [];
-  const subServers = serversData?.sub ?? [];
-  const dubServers = serversData?.dub ?? [];
-  const hasDub = dubServers.length > 0;
-  const usingIframeBackup =
-    episodeData.provider === "gogoanime" && Boolean(episodeData.iframeUrl);
-
-  // Extract ?ep=... safely for fallback iframe
-  const episodeIdRaw = serversData?.episodeId;
-  const epParam =
-    typeof episodeIdRaw === "string" && episodeIdRaw.includes("?ep=")
-      ? episodeIdRaw.split("?ep=")[1]
-      : undefined;
-
   // If no sources, use fallback iframe
   if (episodeData.iframeUrl) {
     return (
       <div>
-        <div
-          className={
-            "relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden"
-          }
-        >
-          <iframe
-            title={`Backup video player for episode ${serversData?.episodeNo ?? ""}`}
-            src={episodeData.iframeUrl}
-            width="100%"
-            height="100%"
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen
-          />
-        </div>
-
-        <div className="mt-4">
-          <Alert className="border-amber-500/50 text-amber-100 bg-amber-950/30">
-            <AlertTitle className="font-bold">
-              {usingIframeBackup && serverName !== GOGOANIME_BACKUP_SERVER_NAME
-                ? "Backup Provider Activated"
-                : "Gogoanime Backup Provider"}
-            </AlertTitle>
-            <AlertDescription>
-              {usingIframeBackup && serverName !== GOGOANIME_BACKUP_SERVER_NAME
-                ? `The ${serverName.toUpperCase()} source was unavailable, so playback was switched to ${GOGOANIME_BACKUP_SERVER_NAME}.`
-                : `You are playing this episode through ${GOGOANIME_BACKUP_SERVER_NAME}.`}
-            </AlertDescription>
-          </Alert>
-        </div>
+        <BrandedPlayerFallback
+          title={`Backup video player for episode ${serversData?.episodeNo ?? ""}`}
+          src={episodeData.iframeUrl}
+          poster={animePoster}
+        />
 
         <div className="flex flex-row bg-[#0f172a] items-start justify-between w-full p-5">
           <div>
-            <div className="flex flex-row items-center space-x-5">
-              <Captions className="text-red-300" />
-              <p className="font-bold text-sm">SUB</p>
-              {subServers.map((s, i) => (
-                <Button
-                  size="sm"
-                  key={i}
-                  className={`uppercase font-bold ${
-                    serverName === s.serverName &&
-                    key === "sub" &&
-                    "bg-red-300"
-                  }`}
-                  onClick={() => changeServer(s.serverName, "sub")}
-                >
-                  {s.serverName}
-                </Button>
-              ))}
-            </div>
+            {hasSubVersion && (
+              <div className="flex flex-row items-center space-x-5">
+                <Captions className="text-red-300" />
+                <p className="font-bold text-sm">SUB</p>
+                {subServers.map((s, i) => (
+                  <Button
+                    size="sm"
+                    key={i}
+                    className={`uppercase font-bold ${
+                      serverName === s.serverName &&
+                      key === "sub" &&
+                      "bg-red-300"
+                    }`}
+                    onClick={() => changeServer(s.serverName, "sub")}
+                  >
+                    {getServerDisplayName(s.serverName)}
+                  </Button>
+                ))}
+              </div>
+            )}
 
-            {hasDub && (
+            {hasDubVersion && (
               <div className="flex flex-row items-center space-x-5 mt-2">
                 <Mic className="text-green-300" />
                 <p className="font-bold text-sm">DUB</p>
@@ -334,7 +419,7 @@ const VideoPlayerSection: React.FC = () => {
                     }`}
                     onClick={() => changeServer(s.serverName, "dub")}
                   >
-                    {s.serverName}
+                    {getServerDisplayName(s.serverName)}
                   </Button>
                 ))}
               </div>
@@ -348,39 +433,19 @@ const VideoPlayerSection: React.FC = () => {
   if (!sources.length) {
     return (
       <>
-        <div
-          className={
-            "relative w-full h-auto aspect-video  min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden p-4"
-          }
-        >
-          {epParam ? (
-            <iframe
-              title={`Video player for episode ${epParam}`}
-              src={`https://megaplay.buzz/stream/s-2/${epParam}/sub`}
-              width="100%"
-              height="100%"
-              allowFullScreen
-            />
-          ) : (
+        {epParam ? (
+          <BrandedPlayerFallback
+            title={`Video player for episode ${epParam}`}
+            src={`https://megaplay.buzz/stream/s-2/${epParam}/${key === "dub" ? "dub" : "sub"}`}
+            poster={animePoster}
+          />
+        ) : (
+          <div className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden p-4">
             <div className="flex h-full w-full items-center justify-center text-sm text-slate-200">
               Episode source is temporarily unavailable. Please try again later.
             </div>
-          )}
-        </div>
-        <div className="mt-4">
-          <Alert variant="destructive" className="text-red-400">
-            <AlertTitle className="font-bold flex items-center space-x-2">
-              <AlertCircleIcon size={20} />
-              <p>Fallback Video Player Activated</p>
-            </AlertTitle>
-            <AlertDescription>
-              The original video source for this episode is currently
-              unavailable. A fallback player has been provided for your
-              convenience. We recommend using an ad blocker for a smoother
-              viewing experience.
-            </AlertDescription>
-          </Alert>
-        </div>
+          </div>
+        )}
       </>
     );
   }
@@ -398,33 +463,36 @@ const VideoPlayerSection: React.FC = () => {
         }}
         subOrDub={key as "sub" | "dub"}
         autoSkip={autoSkip}
-        getInstance={(art) => {
-          setPlayerInstance(art);
+        onEnded={() => {
+          if (!autoNext || !nextEpisode?.episodeId) return;
+          goToEpisode(nextEpisode.episodeId);
         }}
       />
 
       <div className="flex flex-row bg-[#0f172a] items-start justify-between w-full p-5">
         <div>
-          <div className="flex flex-row items-center space-x-5">
-            <Captions className="text-red-300" />
-            <p className="font-bold text-sm">SUB</p>
-            {subServers.map((s, i) => (
-              <Button
-                size="sm"
-                key={i}
-                className={`uppercase font-bold ${
-                  serverName === s.serverName &&
-                  key === "sub" &&
-                  "bg-red-300"
-                }`}
-                onClick={() => changeServer(s.serverName, "sub")}
-              >
-                {s.serverName}
-              </Button>
-            ))}
-          </div>
+          {hasSubVersion && (
+            <div className="flex flex-row items-center space-x-5">
+              <Captions className="text-red-300" />
+              <p className="font-bold text-sm">SUB</p>
+              {subServers.map((s, i) => (
+                <Button
+                  size="sm"
+                  key={i}
+                  className={`uppercase font-bold ${
+                    serverName === s.serverName &&
+                    key === "sub" &&
+                    "bg-red-300"
+                  }`}
+                  onClick={() => changeServer(s.serverName, "sub")}
+                >
+                  {getServerDisplayName(s.serverName)}
+                </Button>
+              ))}
+            </div>
+          )}
 
-          {hasDub && (
+          {hasDubVersion && (
             <div className="flex flex-row items-center space-x-5 mt-2">
               <Mic className="text-green-300" />
               <p className="font-bold text-sm">DUB</p>
@@ -439,7 +507,7 @@ const VideoPlayerSection: React.FC = () => {
                   }`}
                   onClick={() => changeServer(s.serverName, "dub")}
                 >
-                  {s.serverName}
+                  {getServerDisplayName(s.serverName)}
                 </Button>
               ))}
             </div>

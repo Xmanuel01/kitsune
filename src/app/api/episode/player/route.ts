@@ -23,6 +23,9 @@ function resolveRequestedServer(
   preferredServer?: string | null,
 ) {
   const requestedList = Array.isArray(servers?.[category]) ? servers[category] : [];
+  const subList = Array.isArray(servers?.sub) ? servers.sub : [];
+  const dubList = Array.isArray(servers?.dub) ? servers.dub : [];
+  const rawList = Array.isArray(servers?.raw) ? servers.raw : [];
   const matched =
     preferredServer &&
     requestedList.find((server: any) => server?.serverName === preferredServer);
@@ -34,12 +37,43 @@ function resolveRequestedServer(
     };
   }
 
-  const fallbackOrder: ServerCategory[] = [category, "sub", "dub", "raw"];
+  if (preferredServer) {
+    const mirroredMatch = [...subList, ...dubList, ...rawList].find(
+      (server: any) => server?.serverName === preferredServer,
+    );
+
+    if (mirroredMatch?.serverName) {
+      return {
+        category,
+        serverName: mirroredMatch.serverName,
+      };
+    }
+  }
+
+  if (requestedList[0]?.serverName) {
+    return {
+      category,
+      serverName: requestedList[0].serverName,
+    };
+  }
+
+  const mirroredFallback = [...subList, ...dubList, ...rawList].find(
+    (server: any) => server?.serverName,
+  );
+
+  if (mirroredFallback?.serverName) {
+    return {
+      category,
+      serverName: mirroredFallback.serverName,
+    };
+  }
+
+  const fallbackOrder: ServerCategory[] = ["sub", "dub", "raw"];
   for (const key of fallbackOrder) {
     const list = Array.isArray(servers?.[key]) ? servers[key] : [];
     if (list[0]?.serverName) {
       return {
-        category: key,
+        category,
         serverName: list[0].serverName,
       };
     }

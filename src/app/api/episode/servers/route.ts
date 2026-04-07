@@ -1,7 +1,6 @@
 // src/app/api/episode/servers/route.ts
 
 import { getAniwatchScraper } from "@/lib/aniwatch";
-import { GOGOANIME_BACKUP_SERVER_NAME } from "@/lib/provider-constants";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,37 +11,6 @@ const memoryCache = new Map<
   string,
   { data: any; fetchedAt: number }
 >();
-
-function withBackupServers(data: any) {
-  if (!data || typeof data !== "object") {
-    return data;
-  }
-
-  const appendBackup = (servers: any[] | undefined) => {
-    const normalized = Array.isArray(servers) ? [...servers] : [];
-    if (
-      !normalized.some(
-        (server) => server?.serverName === GOGOANIME_BACKUP_SERVER_NAME,
-      )
-    ) {
-      normalized.push({
-        serverId: -1,
-        serverName: GOGOANIME_BACKUP_SERVER_NAME,
-      });
-    }
-    return normalized;
-  };
-
-  return {
-    ...data,
-    sub: appendBackup(data.sub),
-    dub: appendBackup(data.dub),
-  };
-}
-
-function isDirectGogoEpisodeId(value: string) {
-  return /^https?:\/\/[^/]*gogoanime\.by\//i.test(value) && !/\/series\//i.test(value);
-}
 
 // Sanitize incoming id: decode if needed and only allow base + optional '?ep=digits'
 const sanitize = (raw?: string | null) => {
@@ -88,42 +56,13 @@ export async function GET(req: Request) {
     const now = Date.now();
     if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
       console.debug("[EPISODE_SERVERS] returning cached data", cacheKey);
-      return Response.json({ data: withBackupServers(cached.data), fromCache: true });
-    }
-
-    if (isDirectGogoEpisodeId(animeEpisodeId)) {
-      const episodeNoMatch =
-        animeEpisodeId.match(/episode-(\d+)/i) ||
-        animeEpisodeId.match(/-ep(?:isode)?-?(\d+)/i);
-      const episodeNo = episodeNoMatch?.[1] || "";
-
-      const data = {
-        episodeId: animeEpisodeId,
-        episodeNo,
-        sub: [{ serverId: -1, serverName: GOGOANIME_BACKUP_SERVER_NAME }],
-        dub: [],
-        raw: [],
-      };
-
-      memoryCache.set(cacheKey, { data, fetchedAt: now });
-      return Response.json({ data, fromCache: false });
+      return Response.json({ data: cached.data, fromCache: true });
     }
 
     const scraper = await getAniwatchScraper();
     if (!scraper) {
       console.error("[EPISODE_SERVERS] Aniwatch scraper unavailable");
-      return Response.json(
-        {
-          data: {
-            episodeId: animeEpisodeId,
-            episodeNo: "",
-            sub: [{ serverId: -1, serverName: GOGOANIME_BACKUP_SERVER_NAME }],
-            dub: [],
-            raw: [],
-          },
-        },
-        { status: 200 },
-      );
+      return Response.json({ error: "scraper unavailable" }, { status: 503 });
     }
 
     let data: any;
@@ -139,7 +78,7 @@ export async function GET(req: Request) {
       if (cached) {
         console.warn("[EPISODE_SERVERS] using stale cached data after failure", cacheKey);
         return Response.json({
-          data: withBackupServers(cached.data),
+          data: cached.data,
           fromCache: true,
           stale: true,
         });
@@ -154,7 +93,7 @@ export async function GET(req: Request) {
     // cache freshly fetched data in-memory to reduce upstream pressure
     memoryCache.set(cacheKey, { data, fetchedAt: now });
 
-    return Response.json({ data: withBackupServers(data) });
+    return Response.json({ data });
   } catch (err: any) {
     console.error("[EPISODE_SERVERS] API Error:", {
       message: err?.message,

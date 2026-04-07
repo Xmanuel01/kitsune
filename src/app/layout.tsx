@@ -75,6 +75,7 @@ export default function RootLayout({
         <link rel="icon" href="/icon.png" type="image/png" sizes="192x192" />
       </head>
       <body
+        suppressHydrationWarning
         className={`${geistSans.className} antialiased max-w-[100vw] overflow-x-hidden`}
       >
         <ThemeProvider

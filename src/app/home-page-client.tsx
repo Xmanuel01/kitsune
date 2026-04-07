@@ -34,15 +34,15 @@ export default function HomePageClient() {
         featuredAnime={[
           {
             title: "Most Favorite Anime",
-            anime: (data as IAnimeData)?.mostFavoriteAnimes,
+            anime: (data as IAnimeData)?.mostFavoriteAnimes || [],
           },
           {
             title: "Most Popular Anime",
-            anime: (data as IAnimeData)?.mostPopularAnimes,
+            anime: (data as IAnimeData)?.mostPopularAnimes || [],
           },
           {
             title: "Latest Completed Anime",
-            anime: (data as IAnimeData)?.latestCompletedAnimes,
+            anime: (data as IAnimeData)?.latestCompletedAnimes || [],
           },
         ]}
       />

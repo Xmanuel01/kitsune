@@ -13,6 +13,7 @@ import parse from "html-react-parser";
 
 import React from "react";
 import { ArrowLeft, ArrowRight, Captions, Mic } from "lucide-react";
+import Image from "next/image";
 
 import { ROUTES } from "@/constants/routes";
 import { ButtonLink } from "./common/button-link";
@@ -79,12 +80,16 @@ const HeroCarouselItem = ({ anime }: { anime: SpotlightAnime }) => {
   // };
 
   return (
-    <div
-      className={`w-full bg-cover bg-no-repeat bg-center h-[80vh] relative`}
-      style={{ backgroundImage: `url(${anime?.poster})` }}
-      // onMouseEnter={handleMouseEnter}
-      // onMouseLeave={handleMouseLeave}
-    >
+    <div className="w-full h-[80vh] relative overflow-hidden">
+      <Image
+        src={anime.bannerImage || anime.poster}
+        alt={anime.name}
+        fill
+        priority={anime.rank === 1}
+        unoptimized
+        sizes="100vw"
+        className="object-cover object-center"
+      />
       {/* {isHovered && (
         <div className="absolute inset-0 z-0">
           <iframe
@@ -98,8 +103,8 @@ const HeroCarouselItem = ({ anime }: { anime: SpotlightAnime }) => {
       )} */}
 
       {/* Gradient Overlay */}
-      <div className="absolute h-full w-full inset-0 m-auto bg-gradient-to-r from-slate-900 to-transparent z-10"></div>
-      <div className="absolute h-full w-full inset-0 m-auto bg-gradient-to-t from-slate-900 to-transparent z-10"></div>
+      <div className="absolute h-full w-full inset-0 m-auto bg-gradient-to-r from-slate-900 via-slate-900/70 to-slate-900/15 z-10"></div>
+      <div className="absolute h-full w-full inset-0 m-auto bg-gradient-to-t from-slate-950 via-slate-950/55 to-slate-900/10 z-10"></div>
 
       {/* Content Section (remains outside the hover area) */}
       <div className="w-full h-[calc(100%-5.25rem)]  relative z-20">
