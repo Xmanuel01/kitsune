@@ -42,7 +42,12 @@ function isAniwatchHomePageUnavailable(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("getHomePage: fetchError") ||
-    message.includes("Aniwatch scraper is unavailable")
+    message.includes("Aniwatch scraper is unavailable") ||
+    message.includes("Aniwatch request failed") ||
+    message.includes("Aniwatch API request failed") ||
+    message.includes("fetch failed") ||
+    message.includes("ConnectTimeoutError") ||
+    message.includes("UND_ERR_CONNECT_TIMEOUT")
   );
 }
 
