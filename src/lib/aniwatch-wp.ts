@@ -50,6 +50,20 @@ function slugFromHref(href?: string | null) {
   }
 }
 
+function slugFromHrefWithBase(href: string | null | undefined, baseUrl: string) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, baseUrl);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if ((parts[0] === "anime" || parts[0] === "watch") && parts[1]) {
+      return parts[1];
+    }
+    return parts[parts.length - 1] || "";
+  } catch {
+    return href.replace(/^\/+|\/+$/g, "").split("/").pop()?.split(/[?#]/)[0] || "";
+  }
+}
+
 function episodeSlugFromHref(href?: string | null) {
   if (!href) return "";
   try {
@@ -158,6 +172,121 @@ function extractCards($: ReturnType<typeof load>, selector: string, limit = 24) 
     .slice(0, limit);
 }
 
+function episodeIdFromAnikaiHref(href?: string | null) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, ANIKAI_BASE_URL);
+    const id = slugFromHrefWithBase(href, ANIKAI_BASE_URL);
+    const episode = url.hash.match(/ep=(\d+)/i)?.[1] || url.searchParams.get("ep");
+    return id && episode ? `${id}?ep=${episode}` : id;
+  } catch {
+    const [path, hash = ""] = href.split("#");
+    const id = slugFromHrefWithBase(path, ANIKAI_BASE_URL);
+    const episode = hash.match(/ep=(\d+)/i)?.[1];
+    return id && episode ? `${id}?ep=${episode}` : id;
+  }
+}
+
+function typeFromAnikaiInfo($: ReturnType<typeof load>, root: ReturnType<ReturnType<typeof load>>) {
+  const typeLabel = root
+    .find(".info b")
+    .toArray()
+    .map((el) => text($(el).text()).toUpperCase())
+    .find((value) => ["TV", "MOVIE", "ONA", "OVA", "SPECIAL"].includes(value));
+  return normalizeType(typeLabel || root.find(".info").text());
+}
+
+function cardFromAnikaiElement($: ReturnType<typeof load>, el: any): IAnime {
+  const root = $(el);
+  const href =
+    root.attr("href") ||
+    root.find("a.poster[href], a[href*='/watch/']").first().attr("href");
+  const titleElement = root.find(".title").first();
+  const name =
+    text(titleElement.text()) ||
+    text(root.attr("title")) ||
+    text(titleElement.attr("title"));
+  const poster =
+    text(root.find(".poster img").first().attr("data-src")) ||
+    text(root.find(".poster img").first().attr("src")) ||
+    text(root.find("img").first().attr("data-src")) ||
+    text(root.find("img").first().attr("src"));
+
+  return {
+    id: slugFromHrefWithBase(href, ANIKAI_BASE_URL),
+    name,
+    jname: text(titleElement.attr("data-jp")) || name,
+    poster: cleanUrl(poster, ANIKAI_BASE_URL),
+    episodes: {
+      sub: numberFromText(root.find(".info .sub").first().text()),
+      dub: numberFromText(root.find(".info .dub").first().text()),
+    },
+    type: typeFromAnikaiInfo($, root),
+  };
+}
+
+function uniqueAnime<T extends IAnime>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function extractAnikaiCardElements($: ReturnType<typeof load>, elements: any[], limit = 60) {
+  return uniqueAnime(
+    elements
+      .map((el) => cardFromAnikaiElement($, el))
+      .filter((anime) => anime.id && anime.name && anime.poster),
+  ).slice(0, limit);
+}
+
+function extractAnikaiCards($: ReturnType<typeof load>, selector = ".aitem", limit = 60) {
+  return extractAnikaiCardElements($, $(selector).toArray(), limit);
+}
+
+function extractAnikaiSectionCards($: ReturnType<typeof load>, title: string, limit = 24) {
+  const normalizedTitle = title.toLowerCase();
+  const section = $(".swiper-slide, section")
+    .toArray()
+    .find((el) => text($(el).find(".stitle").first().text()).toLowerCase() === normalizedTitle);
+
+  return section ? extractAnikaiCardElements($, $(section).find(".aitem").toArray(), limit) : [];
+}
+
+function latestFromAnikaiElement($: ReturnType<typeof load>, el: any): LatestCompletedAnime {
+  const root = $(el);
+  const href =
+    root.attr("href") ||
+    root.find("a.poster[href], a[href*='/watch/']").first().attr("href");
+  return {
+    ...cardFromAnikaiElement($, el),
+    duration: "",
+    rating: null,
+    episodeId: episodeIdFromAnikaiHref(href),
+  };
+}
+
+function latestFromAnikaiElements($: ReturnType<typeof load>, elements: any[], limit = 60) {
+  return uniqueAnime(
+    elements
+      .map((el) => latestFromAnikaiElement($, el))
+      .filter((anime) => anime.id && anime.name && anime.poster),
+  ).slice(0, limit);
+}
+
+function latestFromAnikaiSection($: ReturnType<typeof load>, title: string, limit = 24) {
+  const normalizedTitle = title.toLowerCase();
+  const section = $(".swiper-slide, section")
+    .toArray()
+    .find((el) => text($(el).find(".stitle").first().text()).toLowerCase() === normalizedTitle);
+
+  if (!section) return [];
+
+  return latestFromAnikaiElements($, $(section).find(".aitem").toArray(), limit);
+}
+
 function buildSpotlight(card: IAnime, index: number): SpotlightAnime {
   return {
     ...card,
@@ -256,42 +385,39 @@ function extractAnikaiSpotlight($: ReturnType<typeof load>): SpotlightAnime[] {
     .filter((anime) => anime.id && anime.name && anime.bannerImage);
 }
 
-async function resolveAniwatchIdByTitle(title: string) {
-  try {
-    const results = await searchAniwatchAnime({ q: title, page: 1 });
-    const normalizedTitle = title.toLowerCase();
-    return (
-      results.animes.find((anime) => anime.name.toLowerCase() === normalizedTitle) ||
-      results.animes[0] ||
-      null
-    );
-  } catch {
-    return null;
-  }
-}
-
-async function getAnikaiSpotlight(): Promise<SpotlightAnime[]> {
+async function getAnikaiHomeFallback() {
   try {
     const html = await fetchText(`${ANIKAI_BASE_URL.replace(/\/$/, "")}/home`);
-    const spotlight = extractAnikaiSpotlight(load(html)).slice(0, 10);
-    const resolved = await Promise.all(
-      spotlight.map(async (anime) => {
-        const match = await resolveAniwatchIdByTitle(anime.name);
-        return {
-          ...anime,
-          id: match?.id || anime.id,
-        };
-      }),
-    );
-    return resolved;
+    const $ = load(html);
+    return {
+      spotlight: extractAnikaiSpotlight($).slice(0, 10),
+      cards: extractAnikaiCards($, ".aitem", 60),
+      latestCards: latestFromAnikaiElements($, $(".aitem").toArray(), 60),
+      newReleases: latestFromAnikaiSection($, "New Releases", 24),
+      upcoming: extractAnikaiSectionCards($, "Upcoming", 12),
+      completed: latestFromAnikaiSection($, "Completed", 24),
+      genres: $(".nav-menu a[href^='/genres/']")
+        .toArray()
+        .map((el) => text($(el).text()))
+        .filter(Boolean),
+    };
   } catch (error) {
-    console.warn("[HOME_PAGE] AnimeKai spotlight failed:", error);
-    return [];
+    console.warn("[HOME_PAGE] AnimeKai home fallback failed:", error);
+    return {
+      spotlight: [] as SpotlightAnime[],
+      cards: [] as IAnime[],
+      latestCards: [] as LatestCompletedAnime[],
+      newReleases: [] as LatestCompletedAnime[],
+      upcoming: [] as IAnime[],
+      completed: [] as LatestCompletedAnime[],
+      genres: [] as string[],
+    };
   }
 }
 
 export async function getAniwatchHomePageData(): Promise<IAnimeData> {
-  let spotlight = await getAnikaiSpotlight();
+  const anikaiFallback = await getAnikaiHomeFallback();
+  let spotlight = anikaiFallback.spotlight;
   let html = "";
   try {
     html = await fetchText(`${BASE_URL}/`);
@@ -299,12 +425,29 @@ export async function getAniwatchHomePageData(): Promise<IAnimeData> {
     if (!spotlight.length) {
       throw error;
     }
-    console.warn("[HOME_PAGE] Aniwatch homepage failed; using AnimeKai hero only:", error);
+    console.warn("[HOME_PAGE] Aniwatch homepage failed; using AnimeKai home fallback:", error);
   }
 
   const $ = load(html);
-  const cards = extractCards($, ".flw-item", 60);
-  const latest = cards.map((card) => latestFromCard(card));
+  const aniwatchCards = extractCards($, ".flw-item", 60);
+  const cards = aniwatchCards.length ? aniwatchCards : anikaiFallback.cards;
+  const latest = aniwatchCards.length
+    ? aniwatchCards.map((card) => latestFromCard(card))
+    : anikaiFallback.newReleases.length >= 12
+      ? anikaiFallback.newReleases
+      : anikaiFallback.latestCards.length
+        ? anikaiFallback.latestCards
+        : cards.map((card) => ({ ...card, duration: "", rating: null }));
+  const upcoming = aniwatchCards.length
+    ? aniwatchCards.slice(0, 12)
+    : anikaiFallback.upcoming.length
+      ? anikaiFallback.upcoming
+      : cards.slice(0, 12);
+  const completed = aniwatchCards.length
+    ? latest.slice(0, 24)
+    : anikaiFallback.completed.length
+      ? anikaiFallback.completed
+      : latest.slice(0, 24);
   if (!spotlight.length) {
     spotlight = extractAniwatchSpotlight($).slice(0, 10);
   }
@@ -316,7 +459,7 @@ export async function getAniwatchHomePageData(): Promise<IAnimeData> {
     spotlightAnimes: spotlight,
     trendingAnimes: cards.slice(0, 12),
     latestEpisodeAnimes: latest.slice(0, 24),
-    topUpcomingAnimes: cards.slice(0, 12).map((anime) => ({
+    topUpcomingAnimes: upcoming.map((anime) => ({
       ...anime,
       duration: "",
       type: anime.type || "",
@@ -330,11 +473,13 @@ export async function getAniwatchHomePageData(): Promise<IAnimeData> {
     topAiringAnimes: latest.slice(0, 12),
     mostPopularAnimes: cards.slice(0, 24),
     mostFavoriteAnimes: cards.slice(12, 36),
-    latestCompletedAnimes: latest.slice(0, 24),
+    latestCompletedAnimes: completed,
     genres: $(".sb-genre-list a, .ulclear li a")
       .toArray()
       .map((el) => text($(el).text()))
-      .filter(Boolean),
+      .filter(Boolean)
+      .concat(anikaiFallback.genres)
+      .filter((genre, index, genres) => genres.indexOf(genre) === index),
   };
 }
 

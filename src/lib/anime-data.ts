@@ -135,7 +135,7 @@ export async function getCachedHomePageData() {
   try {
     return await readThroughCache<IAnimeData>(
       {
-        key: "home-page:v6",
+        key: "home-page:v7",
         ttlSeconds: 60 * 5,
       },
       () => getAniwatchHomePageData(),
