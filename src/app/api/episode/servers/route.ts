@@ -2,6 +2,10 @@
 
 import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
+  getAnikaiEpisodeServers,
+  isAnikaiEpisodeId,
+} from "@/lib/anikai";
+import {
   getAniwatchWpEpisodeServers,
   isAniwatchWpEpisodeId,
 } from "@/lib/aniwatch-wp";
@@ -31,27 +35,6 @@ const sanitize = (raw?: string | null) => {
   if (!m) return decoded.split("?")[0];
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
 };
-
-function extractEpisodeNumber(episodeId: string) {
-  return episodeId.match(/[?&]ep=(\d+)/i)?.[1] || "0";
-}
-
-function createFallbackEpisodeServers(episodeId: string) {
-  const episodeNo = extractEpisodeNumber(episodeId);
-  return {
-    episodeId,
-    episodeNo,
-    sub: [
-      { serverId: 1, serverName: "hd-1" },
-      { serverId: 2, serverName: "hd-2" },
-    ],
-    dub: [
-      { serverId: 1, serverName: "hd-1" },
-      { serverId: 2, serverName: "hd-2" },
-    ],
-    raw: [],
-  };
-}
 
 export async function resolveEpisodeServers(options: {
   animeEpisodeIdRaw?: string | null;
@@ -90,14 +73,27 @@ export async function resolveEpisodeServers(options: {
     };
   }
 
-  if (animeEpisodeId.includes("?ep=")) {
-    const fallbackServers = createFallbackEpisodeServers(animeEpisodeId);
-    memoryCache.set(cacheKey, { data: fallbackServers, fetchedAt: now });
-    return {
-      ok: true as const,
-      status: 200,
-      body: { data: fallbackServers, fallback: true },
-    };
+  if (isAnikaiEpisodeId(animeEpisodeId)) {
+    try {
+      const data = await getAnikaiEpisodeServers(animeEpisodeId);
+      memoryCache.set(cacheKey, { data, fetchedAt: now });
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data, fallback: true },
+      };
+    } catch (scrapeErr: any) {
+      console.error("[EPISODE_SERVERS] AnimeKai episode server error:", {
+        animeEpisodeId,
+        message: scrapeErr?.message,
+        stack: scrapeErr?.stack,
+      });
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: scrapeErr?.message || "AnimeKai scrape failed" },
+      };
+    }
   }
 
   if (isAniwatchWpEpisodeId(animeEpisodeId)) {

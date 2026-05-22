@@ -1,5 +1,9 @@
 import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
+  getAnikaiEpisodeSource,
+  isAnikaiEpisodeId,
+} from "@/lib/anikai";
+import {
   getAniwatchWpEpisodeSource,
   isAniwatchWpEpisodeId,
 } from "@/lib/aniwatch-wp";
@@ -10,7 +14,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const CACHE_TTL_SECONDS = 60 * 30;
-const SOURCE_CACHE_VERSION = "v6";
+const SOURCE_CACHE_VERSION = "v7";
 
 type EpisodeCategory = "sub" | "dub" | "raw";
 
@@ -22,7 +26,7 @@ function isCachedIframeFallback(data: any) {
     data &&
       typeof data === "object" &&
       data.iframeUrl &&
-      data.provider === "megaplay",
+      (data.provider === "megaplay" || data.provider === "anikai"),
   );
 }
 
@@ -192,6 +196,30 @@ export async function resolveEpisodeSources(options: {
         ok: true as const,
         status: 200,
         body: { data: cached.data, fromCache: true },
+      };
+    }
+  }
+
+  if (isAnikaiEpisodeId(episodeId)) {
+    try {
+      const data = await getAnikaiEpisodeSource(episodeId, server, category);
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data, fromCache: false },
+      };
+    } catch (anikaiError: any) {
+      console.error("[EPISODE_SOURCES] AnimeKai source error:", {
+        episodeId,
+        category,
+        server,
+        message: anikaiError?.message,
+        stack: anikaiError?.stack,
+      });
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: anikaiError?.message || "AnimeKai scrape failed" },
       };
     }
   }
