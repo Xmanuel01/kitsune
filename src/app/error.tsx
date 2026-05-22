@@ -1,7 +1,7 @@
 "use client"; // Error components must be Client Components
 
 import Image from "next/image";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ErrorImage from "@/assets/error.gif";
 import { ROUTES } from "@/constants/routes";
 import { Button } from "@/components/ui/button";
@@ -14,10 +14,19 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const [isRetrying, setIsRetrying] = useState(false);
+
   useEffect(() => {
     // Log the error to an error reporting service
     console.error(error);
   }, [error]);
+
+  const handleReload = useCallback(() => {
+    setIsRetrying(true);
+    window.setTimeout(() => {
+      reset();
+    }, 0);
+  }, [reset]);
 
   return (
     <div className="w-[100dvw] h-[100dvh]">
@@ -32,12 +41,16 @@ export default function Error({
         <p className="font-bold text-2xl">Something went wrong!</p>
         <div className="flex gap-3 items-center">
           <ButtonLink href={ROUTES.HOME}>Back to Home</ButtonLink>
-          <Button onClick={() => reset()} className="" variant={"secondary"}>
-            Reload
+          <Button
+            onClick={handleReload}
+            disabled={isRetrying}
+            className=""
+            variant={"secondary"}
+          >
+            {isRetrying ? "Reloading..." : "Reload"}
           </Button>
         </div>
       </div>
     </div>
   );
 }
-
