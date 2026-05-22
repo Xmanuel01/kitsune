@@ -2,24 +2,46 @@
 
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAnimeStore } from "@/store/anime-store";
 import Image from "next/image";
 import KitsunePlayer from "@/components/kitsune-player";
-import { Captions, Maximize2, Mic, Minimize2 } from "lucide-react";
+import type Artplayer from "artplayer";
+import {
+  Captions,
+  ChevronsLeft,
+  ChevronsRight,
+  Expand,
+  Lightbulb,
+  Maximize2,
+  Mic,
+  Minimize2,
+  Plus,
+  Radio,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/store/auth-store";
 import { supabase } from "@/lib/supabaseClient";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRouter } from "next/navigation";
 import { ROUTES } from "@/constants/routes";
 import { useGetAllEpisodes } from "@/query/get-all-episodes";
-import { useGetEpisodePlayerData } from "@/query/get-episode-player-data";
+import {
+  episodePlayerDataQueryKey,
+  getEpisodePlayerData,
+  useGetEpisodePlayerData,
+} from "@/query/get-episode-player-data";
+import { useQueryClient } from "@tanstack/react-query";
 import loadingImage from "@/assets/genkai.gif";
 import styles from "@/components/player.module.css";
 
 const SERVER_DISPLAY_NAMES: Record<string, string> = {
+  hd: "Kitsune",
+  "hd-1": "Kitsune",
+  "fast player": "Tora",
+  "fast-player": "Tora",
+  "fast_player": "Tora",
+  "hd-2": "Tora",
   vidsrc: "Kitsune",
   megacloud: "Tora",
   "t-cloud": "Ryuu",
@@ -29,14 +51,126 @@ function getServerDisplayName(serverName: string) {
   return SERVER_DISPLAY_NAMES[String(serverName || "").toLowerCase()] || serverName;
 }
 
+type PlayerControlBarProps = {
+  autoPlay: boolean;
+  autoNext: boolean;
+  autoSkip: boolean;
+  lightOn: boolean;
+  hasPrevious: boolean;
+  hasNext: boolean;
+  onToggleExpand: () => void;
+  onToggleLight: () => void;
+  onToggleAutoPlay: () => void;
+  onToggleAutoNext: () => void;
+  onToggleAutoSkip: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onAddToList?: () => void;
+  onWatchTogether?: () => void;
+};
+
+function PlayerControlBar({
+  autoPlay,
+  autoNext,
+  autoSkip,
+  lightOn,
+  hasPrevious,
+  hasNext,
+  onToggleExpand,
+  onToggleLight,
+  onToggleAutoPlay,
+  onToggleAutoNext,
+  onToggleAutoSkip,
+  onPrevious,
+  onNext,
+  onAddToList,
+  onWatchTogether,
+}: PlayerControlBarProps) {
+  const textControlClass =
+    "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-none px-0 text-sm font-semibold text-white hover:text-[#ffdc84]";
+  const iconControlClass =
+    "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-none text-white hover:text-[#ffdc84] disabled:cursor-not-allowed disabled:opacity-40";
+  const stateClass = "ml-0.5 text-[#ffdc84]";
+
+  return (
+    <div className="flex min-h-11 w-full flex-wrap items-center justify-between gap-x-4 gap-y-1 bg-[#0b0914] px-3 py-1 text-white">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+        <button type="button" className={textControlClass} onClick={onToggleExpand}>
+          <Expand size={16} />
+          <span>Expand</span>
+        </button>
+        <button type="button" className={textControlClass} onClick={onToggleLight}>
+          <Lightbulb size={16} />
+          <span>Light</span>
+          <span className={stateClass}>{lightOn ? "On" : "Off"}</span>
+        </button>
+        <button type="button" className={textControlClass} onClick={onToggleAutoPlay}>
+          <span>Auto Play</span>
+          <span className={stateClass}>{autoPlay ? "On" : "Off"}</span>
+        </button>
+        <button type="button" className={textControlClass} onClick={onToggleAutoNext}>
+          <span>Auto Next</span>
+          <span className={stateClass}>{autoNext ? "On" : "Off"}</span>
+        </button>
+        <button type="button" className={textControlClass} onClick={onToggleAutoSkip}>
+          <span>Auto Skip Intro</span>
+          <span className={stateClass}>{autoSkip ? "On" : "Off"}</span>
+        </button>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          className={iconControlClass}
+          onClick={onPrevious}
+          disabled={!hasPrevious}
+          aria-label="Previous episode"
+          title="Previous episode"
+        >
+          <ChevronsLeft size={25} fill="currentColor" />
+        </button>
+        <button
+          type="button"
+          className={iconControlClass}
+          onClick={onNext}
+          disabled={!hasNext}
+          aria-label="Next episode"
+          title="Next episode"
+        >
+          <ChevronsRight size={25} fill="currentColor" />
+        </button>
+        <button
+          type="button"
+          className={iconControlClass}
+          onClick={onAddToList}
+          aria-label="Add to list"
+          title="Add to list"
+        >
+          <Plus size={27} strokeWidth={3} />
+        </button>
+        <button
+          type="button"
+          className={`${iconControlClass} text-[#ffdc84]`}
+          onClick={onWatchTogether}
+          aria-label="Watch together"
+          title="Watch together"
+        >
+          <Radio size={22} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function BrandedPlayerFallback({
   src,
   title,
   poster,
+  className = "",
 }: {
   src?: string;
   title: string;
   poster?: string;
+  className?: string;
 }) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -76,7 +210,7 @@ function BrandedPlayerFallback({
   return (
     <div
       ref={playerRef}
-      className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden fullscreen:max-h-none fullscreen:h-screen fullscreen:aspect-auto"
+      className={`relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden fullscreen:max-h-none fullscreen:h-screen fullscreen:aspect-auto ${className}`}
     >
       {src ? (
         <iframe
@@ -138,6 +272,27 @@ function BrandedPlayerFallback({
 const VideoPlayerSection: React.FC = () => {
   const { selectedEpisode, anime, setSelectedEpisode } = useAnimeStore();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const playerShellRef = useRef<HTMLDivElement>(null);
+  const artInstanceRef = useRef<Artplayer | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [lightOn, setLightOn] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("playerLightOn");
+      return stored ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
+  const [autoPlay, setAutoPlay] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("autoPlay");
+      return stored ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
+  const [nextIframePreloadUrl, setNextIframePreloadUrl] = useState<string>("");
 
   const [serverName, setServerName] = useState<string>(() => {
     try {
@@ -219,6 +374,15 @@ const VideoPlayerSection: React.FC = () => {
     return sortedEpisodes[currentIdx + 1] || null;
   }, [sortedEpisodes, selectedEpisode]);
 
+  const previousEpisode = useMemo(() => {
+    if (!sortedEpisodes.length) return null;
+    const currentIdx = sortedEpisodes.findIndex(
+      (episode) => episode.episodeId === selectedEpisode,
+    );
+    if (currentIdx <= 0) return null;
+    return sortedEpisodes[currentIdx - 1] || null;
+  }, [sortedEpisodes, selectedEpisode]);
+
   const goToEpisode = useCallback(
     (episodeId: string | undefined) => {
       if (!episodeId || !animeId) return;
@@ -227,6 +391,171 @@ const VideoPlayerSection: React.FC = () => {
     },
     [animeId, router, setSelectedEpisode],
   );
+
+  const selectedServerForPrefetch = playerData?.selected?.serverName || serverName || undefined;
+  const selectedCategoryForPrefetch = playerData?.selected?.category || key || "sub";
+
+  const prefetchEpisodePlayer = useCallback(
+    async (episodeId: string | undefined) => {
+      if (!episodeId) return;
+      const queryKey = episodePlayerDataQueryKey(
+        episodeId,
+        selectedServerForPrefetch,
+        selectedCategoryForPrefetch,
+      );
+
+      const data = await queryClient.fetchQuery({
+        queryKey,
+        queryFn: () =>
+          getEpisodePlayerData(
+            episodeId,
+            selectedServerForPrefetch,
+            selectedCategoryForPrefetch,
+          ),
+        staleTime: 1000 * 60 * 5,
+      });
+
+      setNextIframePreloadUrl(data?.source?.iframeUrl || "");
+      const sourceUrl = data?.source?.sources?.[0]?.url;
+      if (!sourceUrl) return;
+
+      try {
+        const referer = data.source.headers?.Referer || "https://megacloud.blog";
+        const source = sourceUrl.includes("%") ? decodeURIComponent(sourceUrl) : sourceUrl;
+        await fetch(
+          `/api/m3u8?url=${encodeURIComponent(source)}&ref=${encodeURIComponent(referer)}`,
+          { cache: "force-cache" },
+        );
+      } catch {
+        // Source metadata is already prefetched; ignore manifest warmup failures.
+      }
+    },
+    [queryClient, selectedCategoryForPrefetch, selectedServerForPrefetch],
+  );
+
+  useEffect(() => {
+    if (!selectedEpisode || !sortedEpisodes.length) return;
+    const currentIdx = sortedEpisodes.findIndex(
+      (episode) => episode.episodeId === selectedEpisode,
+    );
+    if (currentIdx === -1) return;
+
+    const nextEpisodes = sortedEpisodes.slice(currentIdx + 1, currentIdx + 4);
+    const timeouts = nextEpisodes.map((episode, index) =>
+      window.setTimeout(() => {
+        void prefetchEpisodePlayer(episode.episodeId);
+      }, index * 600),
+    );
+
+    return () => {
+      timeouts.forEach((timeout) => window.clearTimeout(timeout));
+    };
+  }, [prefetchEpisodePlayer, selectedEpisode, sortedEpisodes]);
+
+  const toggleExpand = useCallback(async () => {
+    const target = playerShellRef.current;
+    if (!target) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await target.requestFullscreen();
+      }
+    } catch (error) {
+      console.error("Failed to toggle player fullscreen:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsExpanded(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  const toggleLight = useCallback(() => {
+    setLightOn((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem("playerLightOn", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAutoPlay = useCallback(() => {
+    setAutoPlay((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem("autoPlay", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      if (next) {
+        void artInstanceRef.current?.play?.().catch(() => {
+          // ignore browser autoplay blocks
+        });
+      } else {
+        artInstanceRef.current?.pause?.();
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAutoNext = useCallback(() => {
+    setAutoNext((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem("autoNext", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const onHandleAutoSkipChange = useCallback(
+    async (value: boolean) => {
+      setAutoSkip(value);
+      if (!auth) {
+        try {
+          localStorage.setItem("autoSkip", JSON.stringify(value));
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      // Persist preference to user metadata in Supabase Auth
+      const { error } = await supabase.auth.updateUser({
+        data: { autoSkip: value },
+      });
+      if (!error) {
+        setAuth({ ...auth, autoSkip: value });
+      } else {
+        console.error("Failed updating autoSkip metadata", error);
+      }
+    },
+    [auth, setAuth],
+  );
+
+  const toggleAutoSkip = useCallback(() => {
+    void onHandleAutoSkipChange(!autoSkip);
+  }, [autoSkip, onHandleAutoSkipChange]);
+
+  const addToList = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("kitsune-open-watchlist"));
+  }, []);
+
+  const copyWatchTogetherLink = useCallback(() => {
+    if (typeof window === "undefined") return;
+    void navigator.clipboard?.writeText(window.location.href).catch(() => {
+      // ignore clipboard permission failures
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -256,27 +585,6 @@ const VideoPlayerSection: React.FC = () => {
       localStorage.setItem("serverPreference", JSON.stringify(preference));
     } catch {
       // ignore storage errors
-    }
-  }
-
-  async function onHandleAutoSkipChange(value: boolean) {
-    setAutoSkip(value);
-    if (!auth) {
-      try {
-        localStorage.setItem("autoSkip", JSON.stringify(value));
-      } catch {
-        // ignore
-      }
-      return;
-    }
-    // Persist preference to user metadata in Supabase Auth
-    const { error } = await supabase.auth.updateUser({
-      data: { autoSkip: value },
-    });
-    if (!error) {
-      setAuth({ ...auth, autoSkip: value });
-    } else {
-      console.error("Failed updating autoSkip metadata", error);
     }
   }
 
@@ -326,13 +634,61 @@ const VideoPlayerSection: React.FC = () => {
     subServers,
   ]);
 
+  const playerControlBar = (
+    <PlayerControlBar
+      autoPlay={autoPlay}
+      autoNext={autoNext}
+      autoSkip={autoSkip}
+      lightOn={lightOn}
+      hasPrevious={Boolean(previousEpisode)}
+      hasNext={Boolean(nextEpisode)}
+      onToggleExpand={toggleExpand}
+      onToggleLight={toggleLight}
+      onToggleAutoPlay={toggleAutoPlay}
+      onToggleAutoNext={toggleAutoNext}
+      onToggleAutoSkip={toggleAutoSkip}
+      onPrevious={() => goToEpisode(previousEpisode?.episodeId)}
+      onNext={() => goToEpisode(nextEpisode?.episodeId)}
+      onAddToList={addToList}
+      onWatchTogether={copyWatchTogetherLink}
+    />
+  );
+  const playerShellClass = `relative ${
+    lightOn ? "" : "z-50 shadow-2xl shadow-black"
+  } ${isExpanded ? "h-screen bg-black" : ""}`;
+  const expandedPlayerClass = isExpanded
+    ? "h-[calc(100vh-2.75rem)] max-h-none min-h-0 aspect-auto"
+    : "";
+  const nextIframePreloader = nextIframePreloadUrl ? (
+    <iframe
+      title="Preloading next episode"
+      src={nextIframePreloadUrl}
+      className="pointer-events-none absolute size-px opacity-0"
+      tabIndex={-1}
+      aria-hidden="true"
+      referrerPolicy="no-referrer"
+    />
+  ) : null;
+
   // Normal loading skeleton
   if (isLoading || (!episodeData && !isEpisodeDataError)) {
     return (
-      <BrandedPlayerFallback
-        title="Loading player"
-        poster={animePoster}
-      />
+      <>
+        {!lightOn ? <div className="fixed inset-0 z-40 bg-black/85" /> : null}
+        <div
+          ref={playerShellRef}
+          className={playerShellClass}
+          data-expanded={isExpanded}
+        >
+          <BrandedPlayerFallback
+            title="Loading player"
+            poster={animePoster}
+            className={expandedPlayerClass}
+          />
+          {playerControlBar}
+          {nextIframePreloader}
+        </div>
+      </>
     );
   }
 
@@ -352,11 +708,21 @@ const VideoPlayerSection: React.FC = () => {
   if (episodeData.iframeUrl) {
     return (
       <div>
-        <BrandedPlayerFallback
-          title={`Backup video player for episode ${serversData?.episodeNo ?? ""}`}
-          src={episodeData.iframeUrl}
-          poster={animePoster}
-        />
+        {!lightOn ? <div className="fixed inset-0 z-40 bg-black/85" /> : null}
+        <div
+          ref={playerShellRef}
+          className={playerShellClass}
+          data-expanded={isExpanded}
+        >
+          <BrandedPlayerFallback
+            title={`Backup video player for episode ${serversData?.episodeNo ?? ""}`}
+            src={episodeData.iframeUrl}
+            poster={animePoster}
+            className={expandedPlayerClass}
+          />
+          {playerControlBar}
+          {nextIframePreloader}
+        </div>
 
         <div className="flex flex-row bg-[#0f172a] items-start justify-between w-full p-5">
           <div>
@@ -410,41 +776,67 @@ const VideoPlayerSection: React.FC = () => {
   if (!sources.length) {
     return (
       <>
-        {epParam ? (
-          <BrandedPlayerFallback
-            title={`Video player for episode ${epParam}`}
-            src={`https://megaplay.buzz/stream/s-2/${epParam}/${key === "dub" ? "dub" : "sub"}`}
-            poster={animePoster}
-          />
-        ) : (
-          <div className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden p-4">
-            <div className="flex h-full w-full items-center justify-center text-sm text-slate-200">
-              Episode source is temporarily unavailable. Please try again later.
+        {!lightOn ? <div className="fixed inset-0 z-40 bg-black/85" /> : null}
+        <div
+          ref={playerShellRef}
+          className={playerShellClass}
+          data-expanded={isExpanded}
+        >
+          {epParam ? (
+            <BrandedPlayerFallback
+              title={`Video player for episode ${epParam}`}
+              src={`https://megaplay.buzz/stream/s-2/${epParam}/${key === "dub" ? "dub" : "sub"}`}
+              poster={animePoster}
+              className={expandedPlayerClass}
+            />
+          ) : (
+            <div
+              className={`relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden p-4 ${expandedPlayerClass}`}
+            >
+              <div className="flex h-full w-full items-center justify-center text-sm text-slate-200">
+                Episode source is temporarily unavailable. Please try again later.
+              </div>
             </div>
-          </div>
-        )}
+          )}
+          {playerControlBar}
+          {nextIframePreloader}
+        </div>
       </>
     );
   }
 
   return (
     <div>
-      <KitsunePlayer
-        key={sources[0]?.url ?? ""}
-        episodeInfo={episodeData}
-        serversData={serversData!}
-        animeInfo={{
-          id: anime.anime.info.id,
-          title: anime.anime.info.name,
-          image: anime.anime.info.poster,
-        }}
-        subOrDub={key as "sub" | "dub"}
-        autoSkip={autoSkip}
-        onEnded={() => {
-          if (!autoNext || !nextEpisode?.episodeId) return;
-          goToEpisode(nextEpisode.episodeId);
-        }}
-      />
+      {!lightOn ? <div className="fixed inset-0 z-40 bg-black/85" /> : null}
+      <div
+        ref={playerShellRef}
+        className={playerShellClass}
+        data-expanded={isExpanded}
+      >
+        <KitsunePlayer
+          key={sources[0]?.url ?? ""}
+          episodeInfo={episodeData}
+          serversData={serversData!}
+          animeInfo={{
+            id: anime.anime.info.id,
+            title: anime.anime.info.name,
+            image: anime.anime.info.poster,
+          }}
+          subOrDub={key as "sub" | "dub"}
+          autoSkip={autoSkip}
+          autoPlay={autoPlay}
+          getInstance={(art) => {
+            artInstanceRef.current = art;
+          }}
+          onEnded={() => {
+            if (!autoNext || !nextEpisode?.episodeId) return;
+            goToEpisode(nextEpisode.episodeId);
+          }}
+          className={expandedPlayerClass}
+        />
+        {playerControlBar}
+        {nextIframePreloader}
+      </div>
 
       <div className="flex flex-row bg-[#0f172a] items-start justify-between w-full p-5">
         <div>
@@ -489,40 +881,6 @@ const VideoPlayerSection: React.FC = () => {
               ))}
             </div>
           )}
-        </div>
-
-        <div className="flex flex-col items-end space-y-2 text-sm">
-          <div className="flex flex-row items-center space-x-2">
-            <Switch
-              checked={autoSkip}
-              onCheckedChange={onHandleAutoSkipChange}
-              id="auto-skip"
-            />
-            <p>Auto Skip</p>
-          </div>
-          <div className="flex flex-row items-center space-x-2">
-            <Switch
-              checked={autoNext}
-              onCheckedChange={(value) => {
-                setAutoNext(value);
-                try {
-                  localStorage.setItem("autoNext", JSON.stringify(value));
-                } catch {
-                  // ignore
-                }
-              }}
-              id="auto-next"
-            />
-            <p>Auto Next</p>
-            <Button
-              size="sm"
-              disabled={!nextEpisode}
-              onClick={() => goToEpisode(nextEpisode?.episodeId)}
-              className="font-semibold"
-            >
-              Next Episode
-            </Button>
-          </div>
         </div>
       </div>
     </div>

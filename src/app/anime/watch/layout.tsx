@@ -124,6 +124,18 @@ const Layout = (props: Props) => {
     }
   };
 
+  useEffect(() => {
+    const addCurrentAnimeToList = () => {
+      void handleSelect("watching");
+    };
+
+    window.addEventListener("kitsune-open-watchlist", addCurrentAnimeToList);
+    return () => {
+      window.removeEventListener("kitsune-open-watchlist", addCurrentAnimeToList);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentAnimeId, anime?.anime.info.name, anime?.anime.info.poster, selected]);
+
   const { data: episodes, isLoading: episodeLoading } = useGetAllEpisodes(
     animeId as string,
   );

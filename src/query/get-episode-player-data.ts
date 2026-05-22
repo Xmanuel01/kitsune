@@ -3,7 +3,7 @@ import { GET_EPISODE_DATA } from "@/constants/query-keys";
 import { IEpisodeServers, IEpisodeSource } from "@/types/episodes";
 import { useQuery } from "@tanstack/react-query";
 
-type EpisodePlayerData = {
+export type EpisodePlayerData = {
   servers: IEpisodeServers;
   source: IEpisodeSource;
   selected: {
@@ -28,7 +28,16 @@ function sanitizeEpisodeId(raw?: string | null) {
   return match[1] + (match[3] ? `?ep=${match[3]}` : "");
 }
 
-async function getEpisodePlayerData(
+export function episodePlayerDataQueryKey(
+  episodeId: string,
+  server: string | undefined,
+  subOrDub: string,
+  episodeNumber?: string,
+) {
+  return [GET_EPISODE_DATA, "player", episodeId, server, subOrDub, episodeNumber] as const;
+}
+
+export async function getEpisodePlayerData(
   episodeId: string,
   server: string | undefined,
   subOrDub: string,
@@ -54,7 +63,7 @@ export function useGetEpisodePlayerData(
 ) {
   return useQuery({
     queryFn: () => getEpisodePlayerData(episodeId, server, subOrDub, episodeNumber),
-    queryKey: [GET_EPISODE_DATA, "player", episodeId, server, subOrDub, episodeNumber],
+    queryKey: episodePlayerDataQueryKey(episodeId, server, subOrDub, episodeNumber),
     enabled: Boolean(episodeId),
     staleTime: 1000 * 30,
     gcTime: 1000 * 60 * 5,
