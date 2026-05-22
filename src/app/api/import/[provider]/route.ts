@@ -1,5 +1,5 @@
 import { AnilistMediaList } from "@/types/anilist-animes";
-import { getAniwatchSearchSuggestions } from "@/lib/aniwatch-catalog";
+import { getAniwatchSearchSuggestions } from "@/lib/aniwatch-wp";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(

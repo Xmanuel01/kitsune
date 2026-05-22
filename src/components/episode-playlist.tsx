@@ -2,13 +2,14 @@
 
 import EpisodeCard from "./common/episode-card";
 import React, { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAnimeStore } from "@/store/anime-store";
 import { Episode, IEpisodes } from "@/types/episodes";
 import Select, { ISelectOptions } from "./common/select";
 import { Input } from "./ui/input";
 import { Bookmark } from "@/hooks/use-get-bookmark";
+import { ROUTES } from "@/constants/routes";
 
 type Props = {
   animeId: string;
@@ -28,10 +29,11 @@ const EpisodePlaylist = ({
   bookmarks,
 }: Props) => {
   const searchParams = useSearchParams();
+  const router = useRouter();
 
   const episodeId = searchParams.get("episode");
 
-  const isLatestEpisode = searchParams.get("type");
+  const isLatestEpisode = searchParams.get("type") === "latest";
 
   const { setSelectedEpisode } = useAnimeStore();
 
@@ -59,16 +61,31 @@ const EpisodePlaylist = ({
   useEffect(() => {
     if (!episodes || !sortedEpisodes.length) return;
 
-    // If there's an episode ID in the URL, use it
-    if (episodeId && episodeId.includes("ep")) {
+    const requestedEpisodeIndex = sortedEpisodes.findIndex(
+      (episode) => episode.episodeId === episodeId,
+    );
+
+    if (!isLatestEpisode && episodeId && requestedEpisodeIndex >= 0) {
+      const groupStart = Math.floor(requestedEpisodeIndex / 50) * 50 + 1;
+      const groupEnd = Math.min(groupStart + 49, episodes.totalEpisodes);
+      setCurrentGroup(`${groupStart} - ${groupEnd}`);
       setSelectedEpisode(episodeId);
       return;
     }
 
-    // Otherwise, use the first episode by default
-    setSelectedEpisode(sortedEpisodes[0].episodeId as string);
-    //eslint-disable-next-line
-  }, [episodes, sortedEpisodes, episodeId]);
+    const firstEpisode = sortedEpisodes[0].episodeId as string;
+    setCurrentGroup(`1 - ${Math.min(50, episodes.totalEpisodes)}`);
+    setSelectedEpisode(firstEpisode);
+    router.replace(`${ROUTES.WATCH}?anime=${animeId}&episode=${firstEpisode}`);
+  }, [
+    animeId,
+    episodes,
+    sortedEpisodes,
+    episodeId,
+    isLatestEpisode,
+    router,
+    setSelectedEpisode,
+  ]);
 
   useEffect(() => {
     if (!episodes || currentGroup === "") return;
@@ -105,7 +122,6 @@ const EpisodePlaylist = ({
           80; //Adding some extra px to achieve better positioning
       }
     }
-    //eslint-disable-next-line
   }, [animeId, sortedEpisodes, episodeId]);
 
   const handleOnSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {

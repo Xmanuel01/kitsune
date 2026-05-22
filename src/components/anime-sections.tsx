@@ -16,6 +16,7 @@ type Props = {
 
 const AnimeSections = (props: Props) => {
   if (props.loading) return <LoadingSkeleton />;
+  if (!props.trendingAnime?.length) return null;
   return (
     <Container className="flex flex-col gap-5 py-10 items-center lg:items-start ">
       <h5 className="text-2xl font-bold">{props.title}</h5>

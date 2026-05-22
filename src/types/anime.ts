@@ -60,6 +60,10 @@ export interface SpotlightAnime {
   episodes: Episodes;
   type: Type;
   otherInfo: string[];
+  rating?: string | null;
+  release?: string | null;
+  quality?: string | null;
+  genres?: string[];
 }
 
 export interface Top10Animes {

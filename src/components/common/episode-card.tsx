@@ -28,11 +28,13 @@ const EpisodeCard = ({
   ...props
 }: Props) => {
   const { selectedEpisode } = useAnimeStore();
-  const { hasWatchedEpisode } = useHasAnimeWatched(
+  const { hasWatchedEpisode, watchProgress } = useHasAnimeWatched(
     props.animeId,
     props.episode.episodeId,
     props.watchedEpisodes!,
   );
+  const progressPercent =
+    watchProgress >= 90 ? 100 : Math.max(0, Math.min(100, watchProgress));
 
   if (showCard && variant === "card") {
     return (
@@ -77,22 +79,25 @@ const EpisodeCard = ({
       </Link>
     );
   } else {
+    const isSelected = selectedEpisode === props.episode.episodeId;
     return (
       <Link
         href={`${ROUTES.WATCH}?anime=${props.animeId}&episode=${props.episode.episodeId}`}
       >
         <div
-          className="flex gap-5 items-center w-full relative h-fit rounded-md p-2"
+          className="flex gap-5 items-center w-full relative h-fit overflow-hidden rounded-md p-2"
           style={
-            selectedEpisode === props.episode.episodeId
+            isSelected
               ? { backgroundColor: "#e9376b" }
-              : hasWatchedEpisode
-                ? {
-                    backgroundColor: "#0f172a",
-                  }
-                : {}
+              : {}
           }
         >
+          {!isSelected && progressPercent > 0 && (
+            <span
+              className="absolute inset-y-0 left-0 bg-green-300/80"
+              style={{ width: `${progressPercent}%` }}
+            />
+          )}
           {/* <figure className="h-[3.125rem] w-[4.375rem] rounded-md overflow-hidden"> */}
           {/*   <Image */}
           {/*     src={props.episode.image} */}
@@ -103,12 +108,12 @@ const EpisodeCard = ({
           {/*     className="h-full w-full object-cover" */}
           {/*   /> */}
           {/* </figure> */}
-          <h3>{`Episode ${props.episode.number}`}</h3>
+          <h3 className="relative z-10">{`Episode ${props.episode.number}`}</h3>
           {props.subOrDub && props.episode.number <= props.subOrDub.sub && (
-            <Captions className="text-gray-400" />
+            <Captions className="relative z-10 text-gray-400" />
           )}
           {props.subOrDub && props.episode.number <= props.subOrDub.dub && (
-            <Mic className="text-gray-400" />
+            <Mic className="relative z-10 text-gray-400" />
           )}
         </div>
       </Link>

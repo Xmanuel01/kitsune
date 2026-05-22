@@ -1,4 +1,8 @@
 import { getAniwatchScraper } from "@/lib/aniwatch";
+import {
+  getAniwatchWpEpisodeSource,
+  isAniwatchWpEpisodeId,
+} from "@/lib/aniwatch-wp";
 import { getCachedValue, setCachedValue } from "@/lib/hot-cache";
 import { supabaseAdmin } from "@/lib/supabaseClient";
 
@@ -6,7 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const CACHE_TTL_SECONDS = 60 * 30;
-const SOURCE_CACHE_VERSION = "v4";
+const SOURCE_CACHE_VERSION = "v6";
 
 type EpisodeCategory = "sub" | "dub" | "raw";
 
@@ -140,116 +144,70 @@ async function persistSourceRecord(recordPayload: any) {
   }
 }
 
-export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const episodeId = sanitize(url.searchParams.get("animeEpisodeId"));
-    const category = (url.searchParams.get("category") as EpisodeCategory | null) || "sub";
-    const server = url.searchParams.get("server") || "hd-1";
+export async function resolveEpisodeSources(options: {
+  animeEpisodeId?: string | null;
+  category?: EpisodeCategory | null;
+  server?: string | null;
+}) {
+  const episodeId = sanitize(options.animeEpisodeId);
+  const category = options.category || "sub";
+  const server = options.server || "hd-1";
 
-    if (!episodeId) {
-      return Response.json(
-        { error: "animeEpisodeId is required" },
-        { status: 400 },
+  if (!episodeId) {
+    return {
+      ok: false as const,
+      status: 400,
+      body: { error: "animeEpisodeId is required" },
+    };
+  }
+
+  const compositeKey = makeKey(episodeId, category, server);
+  const hotCacheKey = `episode-source:${SOURCE_CACHE_VERSION}:${compositeKey}`;
+  const hotCached = await getCachedValue<any>({ key: hotCacheKey });
+  if (hotCached && !isCachedIframeFallback(hotCached)) {
+    return {
+      ok: true as const,
+      status: 200,
+      body: { data: hotCached, fromCache: true, tier: "hot" },
+    };
+  }
+
+  const cached = await getSupabaseCachedRecord(compositeKey);
+  const now = Date.now();
+  if (cached?.data) {
+    const fetchedAtMs = cached.fetchedAt
+      ? new Date(cached.fetchedAt).getTime()
+      : 0;
+    const ageSeconds = (now - fetchedAtMs) / 1000;
+
+    if (ageSeconds < CACHE_TTL_SECONDS && !isCachedIframeFallback(cached.data)) {
+      await setCachedValue(
+        {
+          key: hotCacheKey,
+          ttlSeconds: CACHE_TTL_SECONDS,
+        },
+        cached.data,
       );
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data: cached.data, fromCache: true },
+      };
     }
+  }
 
-    const compositeKey = makeKey(episodeId, category, server);
-    const hotCacheKey = `episode-source:${SOURCE_CACHE_VERSION}:${compositeKey}`;
-    const hotCached = await getCachedValue<any>({ key: hotCacheKey });
-    if (hotCached && !isCachedIframeFallback(hotCached)) {
-      return Response.json({ data: hotCached, fromCache: true, tier: "hot" });
-    }
-
-    const cached = await getSupabaseCachedRecord(compositeKey);
-    const now = Date.now();
-    if (cached?.data) {
-      const fetchedAtMs = cached.fetchedAt
-        ? new Date(cached.fetchedAt).getTime()
-        : 0;
-      const ageSeconds = (now - fetchedAtMs) / 1000;
-
-      if (ageSeconds < CACHE_TTL_SECONDS && !isCachedIframeFallback(cached.data)) {
-        await setCachedValue(
-          {
-            key: hotCacheKey,
-            ttlSeconds: CACHE_TTL_SECONDS,
-          },
-          cached.data,
-        );
-        return Response.json({ data: cached.data, fromCache: true });
-      }
-    }
-
-    let data: any = null;
-    let shouldPersistToCache = true;
-    const scraper = await getAniwatchScraper();
-    if (!scraper) {
-      return Response.json({ error: "scraper unavailable" }, { status: 503 });
-    }
-
+  if (isAniwatchWpEpisodeId(episodeId)) {
     try {
-      data = await scraper.getEpisodeSources(episodeId, server, category);
-    } catch (aniwatchError: any) {
-      console.error("[EPISODE_SOURCES] aniwatch source error:", {
-        episodeId,
+      const data = await getAniwatchWpEpisodeSource(episodeId, server, category);
+      const recordPayload = {
+        compositeKey,
+        animeEpisodeId: episodeId,
         category,
         server,
-        message: aniwatchError?.message,
-        stack: aniwatchError?.stack,
-      });
-
-      const megaplayFallback = createMegaplayFallbackData({
-        episodeId,
-        category,
-        fallbackFromServer: server,
-        fallbackReason: aniwatchError?.message || "aniwatch scrape failed",
-      });
-
-      if (!megaplayFallback) {
-        return Response.json(
-          { error: aniwatchError?.message || "scrape failed" },
-          { status: 502 },
-        );
-      }
-
-      shouldPersistToCache = false;
-      data = megaplayFallback;
-    }
-
-    if (!data?.iframeUrl && (!Array.isArray(data?.sources) || !data.sources.length)) {
-      const megaplayFallback = createMegaplayFallbackData({
-        episodeId,
-        category,
-        fallbackFromServer: server,
-        fallbackReason: "aniwatch returned no playable sources",
-      });
-
-      if (!megaplayFallback) {
-        return Response.json(
-          { error: "No playable sources were found for this episode" },
-          { status: 502 },
-        );
-      }
-
-      shouldPersistToCache = false;
-      data = megaplayFallback;
-    }
-
-    const recordPayload = {
-      compositeKey,
-      animeEpisodeId: episodeId,
-      category,
-      server,
-      data,
-      fetchedAt: new Date().toISOString(),
-    };
-
-    if (shouldPersistToCache) {
+        data,
+        fetchedAt: new Date().toISOString(),
+      };
       await persistSourceRecord(recordPayload);
-    }
-
-    if (!isCachedIframeFallback(data)) {
       await setCachedValue(
         {
           key: hotCacheKey,
@@ -257,9 +215,128 @@ export async function GET(req: Request) {
         },
         data,
       );
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data, fromCache: false },
+      };
+    } catch (aniwatchWpError: any) {
+      console.error("[EPISODE_SOURCES] aniwatch.co.at source error:", {
+        episodeId,
+        category,
+        server,
+        message: aniwatchWpError?.message,
+        stack: aniwatchWpError?.stack,
+      });
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: aniwatchWpError?.message || "aniwatch.co.at scrape failed" },
+      };
+    }
+  }
+
+  let data: any = null;
+  let shouldPersistToCache = true;
+  const scraper = await getAniwatchScraper();
+  if (!scraper) {
+    return {
+      ok: false as const,
+      status: 503,
+      body: { error: "scraper unavailable" },
+    };
+  }
+
+  try {
+    data = await scraper.getEpisodeSources(episodeId, server, category);
+  } catch (aniwatchError: any) {
+    console.error("[EPISODE_SOURCES] aniwatch source error:", {
+      episodeId,
+      category,
+      server,
+      message: aniwatchError?.message,
+      stack: aniwatchError?.stack,
+    });
+
+    const megaplayFallback = createMegaplayFallbackData({
+      episodeId,
+      category,
+      fallbackFromServer: server,
+      fallbackReason: aniwatchError?.message || "aniwatch scrape failed",
+    });
+
+    if (!megaplayFallback) {
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: aniwatchError?.message || "scrape failed" },
+      };
     }
 
-    return Response.json({ data, fromCache: false });
+    shouldPersistToCache = false;
+    data = megaplayFallback;
+  }
+
+  if (!data?.iframeUrl && (!Array.isArray(data?.sources) || !data.sources.length)) {
+    const megaplayFallback = createMegaplayFallbackData({
+      episodeId,
+      category,
+      fallbackFromServer: server,
+      fallbackReason: "aniwatch returned no playable sources",
+    });
+
+    if (!megaplayFallback) {
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: "No playable sources were found for this episode" },
+      };
+    }
+
+    shouldPersistToCache = false;
+    data = megaplayFallback;
+  }
+
+  const recordPayload = {
+    compositeKey,
+    animeEpisodeId: episodeId,
+    category,
+    server,
+    data,
+    fetchedAt: new Date().toISOString(),
+  };
+
+  if (shouldPersistToCache) {
+    await persistSourceRecord(recordPayload);
+  }
+
+  if (!isCachedIframeFallback(data)) {
+    await setCachedValue(
+      {
+        key: hotCacheKey,
+        ttlSeconds: CACHE_TTL_SECONDS,
+      },
+      data,
+    );
+  }
+
+  return {
+    ok: true as const,
+    status: 200,
+    body: { data, fromCache: false },
+  };
+}
+
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const result = await resolveEpisodeSources({
+      animeEpisodeId: url.searchParams.get("animeEpisodeId"),
+      category: (url.searchParams.get("category") as EpisodeCategory | null) || "sub",
+      server: url.searchParams.get("server"),
+    });
+
+    return Response.json(result.body, { status: result.status });
   } catch (error: any) {
     console.error("[EPISODE_SOURCES] API Error:", {
       message: error?.message,

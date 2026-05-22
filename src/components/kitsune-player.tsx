@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useState,
   HTMLAttributes,
+  useCallback,
 } from "react";
 import Artplayer from "artplayer";
 type Option = any;
@@ -90,6 +91,60 @@ function KitsunePlayer({
   const { createOrUpdateBookMark, syncWatchProgress } = useBookMarks({
     populate: false,
   });
+
+  const saveLocalWatchProgress = useCallback(
+    (current: number, duration: number) => {
+      if (!animeInfo.id || !serversData.episodeId || !Number.isFinite(current)) {
+        return;
+      }
+
+      const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+      try {
+        const raw = localStorage.getItem("watch-progress");
+        const progress = raw ? JSON.parse(raw) : {};
+        const animeProgress = progress[animeInfo.id] || {};
+        animeProgress[serversData.episodeId] = {
+          current: Math.round(current),
+          timestamp: Math.round(safeDuration),
+        };
+        progress[animeInfo.id] = animeProgress;
+        localStorage.setItem("watch-progress", JSON.stringify(progress));
+
+        if (current >= WATCH_PROGRESS_MIN_WATCH_TIME) {
+          const watchedRaw = localStorage.getItem("watched");
+          const watchedDetails = watchedRaw ? JSON.parse(watchedRaw) : [];
+          if (Array.isArray(watchedDetails)) {
+            const existingAnime = watchedDetails.find(
+              (watchedAnime: any) => watchedAnime?.anime?.id === animeInfo.id,
+            );
+
+            if (!existingAnime) {
+              watchedDetails.push({
+                anime: {
+                  id: animeInfo.id,
+                  title: animeInfo.title,
+                  poster: animeInfo.image,
+                },
+                episodes: [serversData.episodeId],
+              });
+            } else if (!existingAnime.episodes?.includes(serversData.episodeId)) {
+              existingAnime.episodes = [
+                ...(Array.isArray(existingAnime.episodes) ? existingAnime.episodes : []),
+                serversData.episodeId,
+              ];
+            }
+
+            localStorage.setItem("watched", JSON.stringify(watchedDetails));
+          }
+        }
+
+        window.dispatchEvent(new CustomEvent("kitsune-watch-progress"));
+      } catch {
+        // ignore storage errors
+      }
+    },
+    [animeInfo.id, animeInfo.image, animeInfo.title, serversData.episodeId],
+  );
 
   useEffect(() => {
     setIsAutoSkipEnabled(autoSkip);
@@ -980,6 +1035,7 @@ function KitsunePlayer({
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) &&
         Date.now() - lastUpdateTimeRef.current > WATCH_PROGRESS_UPDATE_INTERVAL
       ) {
+        saveLocalWatchProgress(currentTime, duration);
         syncWatchProgress(
           bookmarkIdRef.current,
           watchedRecordIdRef.current,
@@ -1017,9 +1073,27 @@ function KitsunePlayer({
       autoplayStartedRef.current = true;
     });
 
-    if (typeof onEnded === "function") {
-      art.on("video:ended", onEnded);
-    }
+    const handleEnded = () => {
+      const currentArt = artInstanceRef.current;
+      const duration = currentArt?.duration || 0;
+      if (duration > 0) {
+        saveLocalWatchProgress(duration, duration);
+        syncWatchProgress(bookmarkIdRef.current, watchedRecordIdRef.current, {
+          episodeId: serversData.episodeId,
+          episodeNumber: parseInt(serversData.episodeNo),
+          current: duration,
+          duration,
+        }).then((id) => {
+          if (id) watchedRecordIdRef.current = id;
+        });
+      }
+
+      if (typeof onEnded === "function") {
+        onEnded();
+      }
+    };
+
+    art.on("video:ended", handleEnded);
 
     art.on("resize", () => {
       if (!artInstanceRef.current) return;
@@ -1049,6 +1123,7 @@ function KitsunePlayer({
     const handleInteractionUpdate = () => {
       const art = artInstanceRef.current;
       if (!art || !art.duration || art.duration <= 0) return;
+      saveLocalWatchProgress(art.currentTime, art.duration);
       if (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) {
         console.log("Syncing progress on pause/seek.");
         if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
@@ -1104,6 +1179,7 @@ function KitsunePlayer({
         art.duration > 0 &&
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current)
       ) {
+        saveLocalWatchProgress(art.currentTime, art.duration);
         console.log("Syncing final progress on unmount.");
         syncWatchProgress(
           bookmarkIdRef.current,
@@ -1129,9 +1205,7 @@ function KitsunePlayer({
         art.off("video:timeupdate", handleTimeUpdate);
         art.off("video:canplay");
         art.off("video:play");
-        if (typeof onEnded === "function") {
-          art.off("video:ended", onEnded);
-        }
+        art.off("video:ended", handleEnded);
 
         console.log("Cleanup: Pausing player");
         art.pause();

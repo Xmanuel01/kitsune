@@ -68,6 +68,7 @@ const Layout = (props: Props) => {
     [searchParams],
   );
   const episodeId = searchParams.get("episode");
+  const isLatestEpisode = searchParams.get("type") === "latest";
 
   const [animeId, setAnimeId] = useState<string | null>(currentAnimeId);
 
@@ -76,10 +77,12 @@ const Layout = (props: Props) => {
       setAnimeId(currentAnimeId);
     }
 
-    if (episodeId) {
+    if (episodeId && !isLatestEpisode) {
       setSelectedEpisode(episodeId);
+    } else {
+      setSelectedEpisode("");
     }
-  }, [currentAnimeId, episodeId, animeId, setSelectedEpisode]);
+  }, [currentAnimeId, episodeId, isLatestEpisode, animeId, setSelectedEpisode]);
 
   const { data: anime, isLoading } = useGetAnimeDetails(animeId as string);
 

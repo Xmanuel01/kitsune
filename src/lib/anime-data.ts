@@ -6,7 +6,7 @@ import {
   getAniwatchHomePageData,
   getAniwatchSearchSuggestions,
   searchAniwatchAnime,
-} from "@/lib/aniwatch-catalog";
+} from "@/lib/aniwatch-wp";
 import { IAnimeData, SearchAnimeParams } from "@/types/anime";
 import { IAnimeDetails } from "@/types/anime-details";
 import { IAnimeSchedule } from "@/types/anime-schedule";
@@ -18,6 +18,33 @@ type AnimeBanner = {
     bannerImage: string | null;
   };
 };
+
+function createEmptyAnimeData(): IAnimeData {
+  return {
+    spotlightAnimes: [],
+    trendingAnimes: [],
+    latestEpisodeAnimes: [],
+    topUpcomingAnimes: [],
+    top10Animes: {
+      today: [],
+      week: [],
+      month: [],
+    },
+    topAiringAnimes: [],
+    mostPopularAnimes: [],
+    mostFavoriteAnimes: [],
+    latestCompletedAnimes: [],
+    genres: [],
+  };
+}
+
+function isAniwatchHomePageUnavailable(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("getHomePage: fetchError") ||
+    message.includes("Aniwatch scraper is unavailable")
+  );
+}
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
@@ -38,13 +65,25 @@ function stableStringify(value: unknown): string {
 }
 
 export async function getCachedHomePageData() {
-  return readThroughCache<IAnimeData>(
-    {
-      key: "home-page:v4",
-      ttlSeconds: 60 * 5,
-    },
-    () => getAniwatchHomePageData(),
-  );
+  try {
+    return await readThroughCache<IAnimeData>(
+      {
+        key: "home-page:v6",
+        ttlSeconds: 60 * 5,
+      },
+      () => getAniwatchHomePageData(),
+    );
+  } catch (error) {
+    if (!isAniwatchHomePageUnavailable(error)) {
+      throw error;
+    }
+
+    console.warn(
+      "[HOME_PAGE] Falling back to an empty home payload after scraper failure:",
+      error,
+    );
+    return createEmptyAnimeData();
+  }
 }
 
 export async function getCachedAnimeDetails(animeId: string) {

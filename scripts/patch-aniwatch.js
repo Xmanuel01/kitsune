@@ -9,9 +9,16 @@ const targetPath = path.join(
   "index.js",
 );
 
-const desiredDomain = process.env.ANIWATCH_DOMAIN || "aniwatchtv.to";
+const defaultSourceUrl = "https://aniwatchtv.to";
+const configuredSourceUrl =
+  process.env.ANIWATCH_SOURCE_URL ||
+  (process.env.ANIWATCH_DOMAIN
+    ? `https://${process.env.ANIWATCH_DOMAIN}`
+    : defaultSourceUrl);
+const desiredSourceUrl = new URL(configuredSourceUrl);
+const desiredDomain = desiredSourceUrl.host;
 const desiredReferer =
-  process.env.ANIWATCH_REFERER || `https://${desiredDomain}/`;
+  process.env.ANIWATCH_REFERER || desiredSourceUrl.origin + "/";
 
 function log(message) {
   process.stdout.write(`[patch-aniwatch] ${message}\n`);

@@ -5,9 +5,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useAnimeStore } from "@/store/anime-store";
 import Image from "next/image";
-import { IWatchedAnime } from "@/types/watched-anime";
 import KitsunePlayer from "@/components/kitsune-player";
-import { Captions, Mic } from "lucide-react";
+import { Captions, Maximize2, Mic, Minimize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/store/auth-store";
@@ -40,26 +39,74 @@ function BrandedPlayerFallback({
   poster?: string;
 }) {
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const playerRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setIsLoaded(false);
   }, [src]);
 
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === playerRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    const player = playerRef.current;
+    if (!player) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      await player.requestFullscreen();
+    } catch (error) {
+      console.error("Failed to toggle iframe fullscreen:", error);
+    }
+  };
+
   return (
-    <div className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden">
+    <div
+      ref={playerRef}
+      className="relative w-full h-auto aspect-video min-h-[20vh] sm:min-h-[30vh] md:min-h-[40vh] lg:min-h-[60vh] max-h-[500px] lg:max-h-[calc(100vh-150px)] bg-black overflow-hidden fullscreen:max-h-none fullscreen:h-screen fullscreen:aspect-auto"
+    >
       {src ? (
         <iframe
           title={title}
           src={src}
           width="100%"
           height="100%"
-          allow="autoplay; encrypted-media; picture-in-picture"
+          allow="fullscreen; autoplay; encrypted-media; picture-in-picture"
           allowFullScreen
-          className={`relative z-10 h-full w-full transition-opacity duration-300 ${
+          referrerPolicy="no-referrer"
+          scrolling="no"
+          className={`relative z-10 h-full w-[calc(100%+18px)] transition-opacity duration-300 ${
             isLoaded ? "opacity-100" : "opacity-0"
           }`}
+          style={{ border: 0, overflow: "hidden" }}
           onLoad={() => setIsLoaded(true)}
         />
+      ) : null}
+
+      {src ? (
+        <Button
+          type="button"
+          size="icon"
+          variant="secondary"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+          className="absolute right-3 top-3 z-30 h-9 w-9 animate-pulse rounded-full bg-red-600 text-white ring-2 ring-red-300 hover:bg-red-700"
+        >
+          {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+        </Button>
       ) : null}
 
       <div
@@ -201,20 +248,6 @@ const VideoPlayerSection: React.FC = () => {
     };
   }, []);
 
-  const [watchedDetails, setWatchedDetails] = useState<Array<IWatchedAnime>>(
-    () => {
-      try {
-        const raw = localStorage.getItem("watched");
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    },
-  );
-
-
   function changeServer(nextServerName: string, nextKey: string) {
     setServerName(nextServerName);
     setKey(nextKey);
@@ -246,62 +279,6 @@ const VideoPlayerSection: React.FC = () => {
       console.error("Failed updating autoSkip metadata", error);
     }
   }
-
-  useEffect(() => {
-    if (auth) return;
-
-    if (!Array.isArray(watchedDetails)) {
-      localStorage.removeItem("watched");
-      return;
-    }
-
-    if (episodeData && anime?.anime?.info?.id) {
-      const existingAnime = watchedDetails.find(
-        (watchedAnime) => watchedAnime.anime.id === anime.anime.info.id,
-      );
-
-      if (!existingAnime) {
-        const updatedWatchedDetails: IWatchedAnime[] = [
-          ...watchedDetails,
-          {
-            anime: {
-              id: anime.anime.info.id,
-              title: anime.anime.info.name,
-              poster: anime.anime.info.poster,
-            },
-            episodes: [selectedEpisode],
-          },
-        ];
-        localStorage.setItem("watched", JSON.stringify(updatedWatchedDetails));
-        setWatchedDetails(updatedWatchedDetails);
-      } else {
-        const episodeAlreadyWatched =
-          existingAnime.episodes.includes(selectedEpisode);
-
-        if (!episodeAlreadyWatched) {
-          const updatedWatchedDetails: IWatchedAnime[] = watchedDetails.map(
-            (watchedAnime) =>
-              watchedAnime.anime.id === anime.anime.info.id
-                ? {
-                    ...watchedAnime,
-                    episodes: [
-                      ...watchedAnime.episodes,
-                      selectedEpisode,
-                    ],
-                  }
-                : watchedAnime,
-          );
-
-          localStorage.setItem(
-            "watched",
-            JSON.stringify(updatedWatchedDetails),
-          );
-          setWatchedDetails(updatedWatchedDetails);
-        }
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episodeData, selectedEpisode, auth]);
 
   const sources = episodeData?.sources ?? [];
   const rawSubServers = useMemo(() => serversData?.sub ?? [], [serversData?.sub]);

@@ -1,3 +1,6 @@
+import { resolveEpisodeServers } from "@/app/api/episode/servers/route";
+import { resolveEpisodeSources } from "@/app/api/episode/sources/route";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -85,7 +88,6 @@ function resolveRequestedServer(
 export async function GET(req: Request) {
   try {
     const requestUrl = new URL(req.url);
-    const origin = requestUrl.origin;
     const episodeId = sanitizeEpisodeId(
       requestUrl.searchParams.get("animeEpisodeId"),
     );
@@ -101,22 +103,23 @@ export async function GET(req: Request) {
       );
     }
 
-    const serversResponse = await fetch(
-      `${origin}/api/episode/servers?animeEpisodeId=${encodeURIComponent(episodeId)}`,
-      {
-        cache: "no-store",
-      },
-    );
+    const serversResult = await resolveEpisodeServers({
+      animeEpisodeIdRaw: episodeId,
+      category,
+      server: preferredServer,
+    });
 
-    if (!serversResponse.ok) {
-      const payload = await serversResponse.text();
+    if (!serversResult.ok) {
       return Response.json(
-        { error: "Failed to resolve episode servers", details: payload },
-        { status: serversResponse.status },
+        {
+          error: "Failed to resolve episode servers",
+          details: serversResult.body,
+        },
+        { status: serversResult.status },
       );
     }
 
-    const serversPayload = await serversResponse.json();
+    const serversPayload = serversResult.body;
     const servers = serversPayload.data;
     const selected = resolveRequestedServer(servers, category, preferredServer);
 
@@ -127,33 +130,23 @@ export async function GET(req: Request) {
       );
     }
 
-    const sourceParams = new URLSearchParams({
+    const sourceResult = await resolveEpisodeSources({
       animeEpisodeId: episodeId,
       category: selected.category,
       server: selected.serverName,
     });
 
-    const resolvedEpisodeNumber = episodeNumber || String(servers?.episodeNo || "");
-    if (resolvedEpisodeNumber) {
-      sourceParams.set("episodeNumber", resolvedEpisodeNumber);
-    }
-
-    const sourceResponse = await fetch(
-      `${origin}/api/episode/sources?${sourceParams.toString()}`,
-      {
-        cache: "no-store",
-      },
-    );
-
-    if (!sourceResponse.ok) {
-      const payload = await sourceResponse.text();
+    if (!sourceResult.ok) {
       return Response.json(
-        { error: "Failed to resolve episode source", details: payload },
-        { status: sourceResponse.status },
+        {
+          error: "Failed to resolve episode source",
+          details: sourceResult.body,
+        },
+        { status: sourceResult.status },
       );
     }
 
-    const sourcePayload = await sourceResponse.json();
+    const sourcePayload = sourceResult.body;
     return Response.json(
       {
         data: {

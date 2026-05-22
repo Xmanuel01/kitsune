@@ -1,0 +1,594 @@
+import { load } from "cheerio";
+import { IAnime, IAnimeData, IAnimeSearch, ISuggestionAnime, LatestCompletedAnime, SearchAnimeParams, SpotlightAnime, TopUpcomingAnime, Type } from "@/types/anime";
+import { IAnimeDetails, RecommendedAnime, RelatedAnime, Season } from "@/types/anime-details";
+import { IAnimeSchedule } from "@/types/anime-schedule";
+import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
+
+const BASE_URL = process.env.ANIWATCH_SOURCE_URL || "https://aniwatch.co.at";
+const API_BASE_URL = `${BASE_URL.replace(/\/$/, "")}/wp-json/hianime/v1`;
+const ANIKAI_BASE_URL = process.env.ANIKAI_SOURCE_URL || "https://anikai.to";
+
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function cleanUrl(value?: string | null, baseUrl = BASE_URL) {
+  const url = text(value).replace(/&amp;/g, "&");
+  if (!url) return "";
+  try {
+    return new URL(url, baseUrl).href;
+  } catch {
+    return url;
+  }
+}
+
+function backgroundImageFromStyle(style?: string | null) {
+  return text(style).match(/background-image:\s*url\((['"]?)(.*?)\1\)/i)?.[2] || "";
+}
+
+function numberFromText(value?: string | null) {
+  return Number(text(value).match(/\d+/)?.[0]) || null;
+}
+
+function labeledMetric($: ReturnType<typeof load>, root: ReturnType<ReturnType<typeof load>>, label: string) {
+  const item = root
+    .find(".mics > div")
+    .toArray()
+    .find((el) => text($(el).find("div").first().text()).toLowerCase() === label.toLowerCase());
+  return item ? text($(item).find("span").first().text()) : "";
+}
+
+function slugFromHref(href?: string | null) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, BASE_URL);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "anime" && parts[1]) return parts[1];
+    return parts[parts.length - 1] || "";
+  } catch {
+    return href.replace(/^\/+|\/+$/g, "").split("/").pop() || "";
+  }
+}
+
+function episodeSlugFromHref(href?: string | null) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, BASE_URL);
+    return url.pathname.split("/").filter(Boolean).pop() || "";
+  } catch {
+    return href.replace(/^\/+|\/+$/g, "").split("/").pop() || "";
+  }
+}
+
+async function fetchText(url: string) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "User-Agent": "Mozilla/5.0",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Aniwatch request failed: ${response.status} ${url}`);
+  }
+  return response.text();
+}
+
+async function fetchAnimeOrEpisodePage(slug: string) {
+  try {
+    return await fetchText(`${BASE_URL}/anime/${slug}/`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("404")) {
+      throw error;
+    }
+    return fetchText(`${BASE_URL}/${slug}/`);
+  }
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json,*/*",
+      Referer: `${BASE_URL}/`,
+      "User-Agent": "Mozilla/5.0",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Aniwatch API request failed: ${response.status} ${url}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+function normalizeType(value?: string | null) {
+  const normalized = text(value).toUpperCase();
+  if (normalized.includes("MOVIE")) return Type.Movie;
+  if (normalized.includes("ONA")) return Type.Ona;
+  return Type.Tv;
+}
+
+function cardFromElement($: ReturnType<typeof load>, el: any): IAnime {
+  const root = $(el);
+  const href =
+    root.find(".film-name a").attr("href") ||
+    root.find("a").first().attr("href") ||
+    root.attr("href");
+  const name =
+    text(root.find(".film-name a").first().text()) ||
+    text(root.find(".film-name").first().text()) ||
+    text(root.attr("title"));
+  const poster =
+    text(root.find(".film-poster-img").attr("data-src")) ||
+    text(root.find(".film-poster-img").attr("src")) ||
+    text(root.find("img").first().attr("data-src")) ||
+    text(root.find("img").first().attr("src"));
+  const info = root.find(".fd-infor, .film-infor").text();
+  const epNumbers = [...info.matchAll(/Ep\s*(\d+)/gi)].map((match) => Number(match[1]) || 0);
+  const hasDub = /\bDub\b/i.test(info);
+
+  return {
+    id: slugFromHref(href),
+    name,
+    jname: text(root.find(".dynamic-name").attr("data-jname")) || name,
+    poster,
+    episodes: {
+      sub: epNumbers[0] || null,
+      dub: hasDub ? epNumbers[epNumbers.length - 1] || epNumbers[0] || null : null,
+    },
+    type: normalizeType(info),
+  };
+}
+
+function latestFromCard(card: IAnime, el?: any, $?: ReturnType<typeof load>): LatestCompletedAnime {
+  const href = $ && el ? $(el).find(".film-detail .film-name a, .film-name a, a").first().attr("href") : undefined;
+  return {
+    ...card,
+    duration: "",
+    rating: null,
+    episodeId: episodeSlugFromHref(href),
+  };
+}
+
+function extractCards($: ReturnType<typeof load>, selector: string, limit = 24) {
+  return $(selector)
+    .toArray()
+    .map((el) => cardFromElement($, el))
+    .filter((anime) => anime.id && anime.name)
+    .slice(0, limit);
+}
+
+function buildSpotlight(card: IAnime, index: number): SpotlightAnime {
+  return {
+    ...card,
+    rank: index + 1,
+    description: "",
+    type: card.type || Type.Tv,
+    otherInfo: [],
+  };
+}
+
+function extractAniwatchSpotlight($: ReturnType<typeof load>): SpotlightAnime[] {
+  return $(".deslide-item")
+    .toArray()
+    .map((el, index) => {
+      const root = $(el);
+      const detailHref =
+        root.find(".desi-buttons a[href*='/anime/']").attr("href") ||
+        root.find("a[href*='/anime/']").first().attr("href");
+      const bannerImage = cleanUrl(
+        root.find(".deslide-cover-img img").attr("data-src") ||
+          root.find(".deslide-cover-img img").attr("src"),
+      );
+      const name =
+        text(root.find(".desi-head-title").first().text()) ||
+        text(root.find(".deslide-cover-img img").attr("alt"));
+      const detailText = root.find(".sc-detail").text();
+      const sub = numberFromText(root.find(".tick-item.tick-eps").first().text());
+
+      return {
+        rank: index + 1,
+        id: slugFromHref(detailHref),
+        name,
+        description: text(root.find(".desi-description").first().text()),
+        poster: bannerImage,
+        bannerImage,
+        jname: text(root.find(".desi-head-title").first().attr("data-jname")) || name,
+        episodes: {
+          sub,
+          dub: null,
+        },
+        type: normalizeType(detailText),
+        otherInfo: root
+          .find(".scd-item")
+          .toArray()
+          .map((item) => text($(item).text()))
+          .filter(Boolean),
+        rating: null,
+        release: null,
+        quality: text(root.find(".quality").first().text()) || null,
+        genres: [],
+      } satisfies SpotlightAnime;
+    })
+    .filter((anime) => anime.id && anime.name && anime.bannerImage);
+}
+
+function extractAnikaiSpotlight($: ReturnType<typeof load>): SpotlightAnime[] {
+  return $("#featured .swiper-slide")
+    .toArray()
+    .map((el, index) => {
+      const root = $(el);
+      const href = root.find(".watch-btn[href], a[href*='/watch/']").first().attr("href");
+      const bannerImage = cleanUrl(backgroundImageFromStyle(root.attr("style")), ANIKAI_BASE_URL);
+      const name = text(root.find(".detail .title").first().text());
+      const infoText = root.find(".info").text();
+      const genres = root
+        .find(".info span")
+        .toArray()
+        .filter((item) => !$(item).hasClass("sub") && !$(item).hasClass("dub") && !$(item).find("b").length)
+        .flatMap((item) => text($(item).text()).split(","))
+        .map((genre) => genre.trim())
+        .filter(Boolean);
+      const rating = labeledMetric($, root, "Rating") || null;
+      const release = labeledMetric($, root, "Release") || null;
+      const quality = labeledMetric($, root, "Quality") || null;
+
+      return {
+        rank: index + 1,
+        id: slugFromHref(href),
+        name,
+        description: text(root.find(".desc").first().text()),
+        poster: bannerImage,
+        bannerImage,
+        jname: text(root.find(".detail .title").first().attr("data-jp")) || name,
+        episodes: {
+          sub: numberFromText(root.find(".info .sub").first().text()),
+          dub: numberFromText(root.find(".info .dub").first().text()),
+        },
+        type: normalizeType(text(root.find(".info b").first().text()) || infoText),
+        otherInfo: [text(root.find(".info b").first().text()), ...genres].filter(Boolean),
+        rating,
+        release,
+        quality,
+        genres,
+      } satisfies SpotlightAnime;
+    })
+    .filter((anime) => anime.id && anime.name && anime.bannerImage);
+}
+
+async function resolveAniwatchIdByTitle(title: string) {
+  try {
+    const results = await searchAniwatchAnime({ q: title, page: 1 });
+    const normalizedTitle = title.toLowerCase();
+    return (
+      results.animes.find((anime) => anime.name.toLowerCase() === normalizedTitle) ||
+      results.animes[0] ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function getAnikaiSpotlight(): Promise<SpotlightAnime[]> {
+  try {
+    const html = await fetchText(`${ANIKAI_BASE_URL.replace(/\/$/, "")}/home`);
+    const spotlight = extractAnikaiSpotlight(load(html)).slice(0, 10);
+    const resolved = await Promise.all(
+      spotlight.map(async (anime) => {
+        const match = await resolveAniwatchIdByTitle(anime.name);
+        return {
+          ...anime,
+          id: match?.id || anime.id,
+        };
+      }),
+    );
+    return resolved;
+  } catch (error) {
+    console.warn("[HOME_PAGE] AnimeKai spotlight failed:", error);
+    return [];
+  }
+}
+
+export async function getAniwatchHomePageData(): Promise<IAnimeData> {
+  let spotlight = await getAnikaiSpotlight();
+  let html = "";
+  try {
+    html = await fetchText(`${BASE_URL}/`);
+  } catch (error) {
+    if (!spotlight.length) {
+      throw error;
+    }
+    console.warn("[HOME_PAGE] Aniwatch homepage failed; using AnimeKai hero only:", error);
+  }
+
+  const $ = load(html);
+  const cards = extractCards($, ".flw-item", 60);
+  const latest = cards.map((card) => latestFromCard(card));
+  if (!spotlight.length) {
+    spotlight = extractAniwatchSpotlight($).slice(0, 10);
+  }
+  if (!spotlight.length) {
+    spotlight = cards.slice(0, 8).map(buildSpotlight);
+  }
+
+  return {
+    spotlightAnimes: spotlight,
+    trendingAnimes: cards.slice(0, 12),
+    latestEpisodeAnimes: latest.slice(0, 24),
+    topUpcomingAnimes: cards.slice(0, 12).map((anime) => ({
+      ...anime,
+      duration: "",
+      type: anime.type || "",
+      rating: null,
+    } satisfies TopUpcomingAnime)),
+    top10Animes: {
+      today: latest.slice(0, 10),
+      week: cards.slice(10, 20),
+      month: latest.slice(20, 30),
+    },
+    topAiringAnimes: latest.slice(0, 12),
+    mostPopularAnimes: cards.slice(0, 24),
+    mostFavoriteAnimes: cards.slice(12, 36),
+    latestCompletedAnimes: latest.slice(0, 24),
+    genres: $(".sb-genre-list a, .ulclear li a")
+      .toArray()
+      .map((el) => text($(el).text()))
+      .filter(Boolean),
+  };
+}
+
+function detailListValue($: ReturnType<typeof load>, label: string) {
+  const item = $(".item, .anisc-info .item").toArray().find((el) =>
+    text($(el).find(".item-head, .item-title, strong").first().text()).toLowerCase().includes(label),
+  );
+  return item ? text($(item).text().replace(/^[^:]+:\s*/, "")) : "";
+}
+
+export async function getAniwatchAnimeDetails(animeId: string): Promise<IAnimeDetails> {
+  const html = await fetchAnimeOrEpisodePage(animeId);
+  const $ = load(html);
+  const name =
+    text($("h1").first().text()) ||
+    text($(".film-name.dynamic-name").first().text()) ||
+    animeId;
+  const poster =
+    text($(".film-poster-img").first().attr("data-src")) ||
+    text($(".film-poster-img").first().attr("src")) ||
+    text($('meta[property="og:image"]').attr("content"));
+  const description =
+    text($(".description, .film-description, .text").first().text()) ||
+    text($('meta[name="description"]').attr("content"));
+  const totalEpisodes = Number($(".ss-list a").length) || 0;
+  const related = extractCards($, ".flw-item", 24).map((anime) => ({
+    ...anime,
+    episodes: { sub: anime.episodes.sub ?? 0, dub: anime.episodes.dub ?? 0 },
+    type: anime.type || "",
+  } satisfies RelatedAnime));
+
+  return {
+    anime: {
+      info: {
+        id: animeId,
+        anilistId: 0,
+        malId: 0,
+        name,
+        poster,
+        description,
+        stats: {
+          rating: detailListValue($, "rating"),
+          quality: "",
+          episodes: {
+            sub: totalEpisodes,
+            dub: totalEpisodes,
+          },
+          type: detailListValue($, "type") || "TV",
+          duration: detailListValue($, "duration"),
+        },
+        promotionalVideos: [],
+        charactersVoiceActors: [],
+      },
+      moreInfo: {
+        japanese: "",
+        synonyms: "",
+        aired: detailListValue($, "aired"),
+        premiered: "",
+        duration: detailListValue($, "duration"),
+        status: detailListValue($, "status"),
+        malscore: detailListValue($, "score"),
+        genres: $(".genre, a[href*='/genre/']")
+          .toArray()
+          .map((el) => text($(el).text()))
+          .filter(Boolean),
+        studios: "",
+        producers: [],
+      },
+    },
+    seasons: [] as Season[],
+    mostPopularAnimes: related,
+    relatedAnimes: related,
+    recommendedAnimes: related.map((anime) => ({
+      ...anime,
+      duration: "",
+      rating: "",
+    } satisfies RecommendedAnime)),
+  };
+}
+
+async function getAnimeNumericId(animeId: string) {
+  const html = await fetchAnimeOrEpisodePage(animeId);
+  const $ = load(html);
+  const shortlink = $("link[rel='shortlink']").attr("href") || "";
+  const id =
+    $("#ani_detail").attr("data-anime-id") ||
+    $("[data-anime-id]").first().attr("data-anime-id") ||
+    new URL(shortlink || BASE_URL, BASE_URL).searchParams.get("p");
+  if (!id) throw new Error(`Aniwatch anime id was not found for ${animeId}`);
+  return id;
+}
+
+export async function getAniwatchAnimeEpisodes(animeId: string): Promise<IEpisodes> {
+  const numericId = await getAnimeNumericId(animeId);
+  const payload = await fetchJson<{ status?: boolean; success?: boolean; html?: string }>(
+    `${API_BASE_URL}/episode/list/${numericId}`,
+  );
+  const $ = load(payload.html || "");
+  const episodes = $(".ss-list a")
+    .toArray()
+    .map((el) => ({
+      title: text($(el).attr("title")) || text($(el).text()),
+      episodeId: episodeSlugFromHref($(el).attr("href")),
+      number: Number($(el).attr("data-number")) || 0,
+      isFiller: $(el).hasClass("ssl-item-filler"),
+    }))
+    .filter((episode) => episode.episodeId);
+
+  return {
+    totalEpisodes: episodes.length,
+    episodes,
+  };
+}
+
+export async function searchAniwatchAnime(params: SearchAnimeParams): Promise<IAnimeSearch> {
+  const url = new URL("/", BASE_URL);
+  url.searchParams.set("s", params.q);
+  const html = await fetchText(url.href);
+  const $ = load(html);
+  const animes = extractCards($, ".flw-item", 48);
+  return {
+    animes,
+    totalPages: 1,
+    hasNextPage: false,
+    currentPage: params.page || 1,
+  };
+}
+
+export async function getAniwatchSearchSuggestions(query: string) {
+  const payload = await fetchJson<{ success?: boolean; html?: string }>(
+    `${API_BASE_URL}/search/suggestions?keyword=${encodeURIComponent(query)}`,
+  );
+  const $ = load(payload.html || "");
+  return {
+    suggestions: $(".nav-item")
+      .toArray()
+      .map((el) => {
+        const card = cardFromElement($, el);
+        return {
+          ...card,
+          moreInfo: $(el)
+            .find(".film-infor")
+            .contents()
+            .toArray()
+            .map((entry) => text($(entry).text()))
+            .filter(Boolean),
+        } satisfies ISuggestionAnime;
+      })
+      .filter((anime) => anime.id && anime.name),
+  };
+}
+
+export async function getAniwatchAnimeSchedule(date?: string): Promise<IAnimeSchedule> {
+  const targetDate = date || new Date().toISOString().slice(0, 10);
+  const payload = await fetchJson<{ success?: boolean; html?: string }>(
+    `${API_BASE_URL}/schedule/day?date=${encodeURIComponent(targetDate)}`,
+  );
+  const $ = load(payload.html || "");
+  const scheduledAnimes = $("li")
+    .toArray()
+    .map((el) => {
+      const href = $(el).find("a").attr("href");
+      const timeValue = text($(el).find(".time").text());
+      const airingTimestamp = timeValue ? new Date(`${targetDate}T${timeValue}:00`).getTime() : 0;
+      return {
+        id: slugFromHref(href),
+        name: text($(el).find(".film-name, .dynamic-name").first().text()),
+        jname: text($(el).find(".dynamic-name").first().attr("data-jname")),
+        time: timeValue,
+        airingTimestamp,
+        secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
+        episode: Number(text($(el).find("button").text()).match(/\d+/)?.[0]) || 0,
+      };
+    })
+    .filter((item) => item.id && item.name);
+
+  return { scheduledAnimes };
+}
+
+function decodeServerUrl(hash?: string | null) {
+  if (!hash) return "";
+  try {
+    return Buffer.from(hash, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function getEpisodePage(episodeId: string) {
+  const cleanId = episodeId.replace(/^\/+|\/+$/g, "");
+  return load(await fetchText(`${BASE_URL}/${cleanId}/`));
+}
+
+export async function getAniwatchWpEpisodeServers(episodeId: string): Promise<IEpisodeServers> {
+  const $ = await getEpisodePage(episodeId);
+  const result: IEpisodeServers = {
+    episodeId,
+    episodeNo: text($("body").text()).match(/episode\s+(\d+)/i)?.[1] || "0",
+    sub: [],
+    dub: [],
+    raw: [],
+  };
+
+  $(".server-item").each((index, el) => {
+    const category = text($(el).attr("data-type")) as "sub" | "dub" | "raw";
+    const serverName = text($(el).attr("data-server-name")).toLowerCase();
+    if (!category || !serverName || !result[category]) return;
+    result[category].push({
+      serverId: index + 1,
+      serverName,
+    });
+  });
+
+  return result;
+}
+
+export async function getAniwatchWpEpisodeSource(
+  episodeId: string,
+  serverName: string,
+  category: "sub" | "dub" | "raw",
+): Promise<IEpisodeSource> {
+  const $ = await getEpisodePage(episodeId);
+  const normalizedCategory = category === "raw" ? "sub" : category;
+  const normalizedServer = serverName.toLowerCase();
+  const server =
+    $(".server-item")
+      .toArray()
+      .find((el) => {
+        const itemCategory = text($(el).attr("data-type")).toLowerCase();
+        const itemServer = text($(el).attr("data-server-name")).toLowerCase();
+        return itemCategory === normalizedCategory && itemServer === normalizedServer;
+      }) ||
+    $(".server-item")
+      .toArray()
+      .find((el) => text($(el).attr("data-type")).toLowerCase() === normalizedCategory) ||
+    $(".server-item").first().get(0);
+  const iframeUrl = decodeServerUrl($(server).attr("data-hash"));
+  if (!iframeUrl) throw new Error(`Aniwatch stream was not found for ${episodeId}`);
+
+  return {
+    headers: {
+      Referer: `${BASE_URL}/`,
+    },
+    tracks: [],
+    intro: { start: 0, end: 0 },
+    outro: { start: 0, end: 0 },
+    sources: [],
+    anilistID: 0,
+    malID: 0,
+    provider: "aniwatch",
+    iframeUrl,
+  };
+}
+
+export function isAniwatchWpEpisodeId(episodeId?: string | null) {
+  return Boolean(episodeId && !episodeId.includes("?ep="));
+}
