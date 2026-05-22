@@ -44,6 +44,10 @@ function AnimeSchedule() {
   const { isLoading, data } = useGetAnimeSchedule(selectedDate);
   const scheduledAnimes = data?.scheduledAnimes ?? [];
 
+  if (!isLoading && scheduledAnimes.length === 0) {
+    return null;
+  }
+
   return (
     <Container className="flex flex-col gap-5 py-10 items-center lg:items-start">
       <h5 className="text-2xl font-bold">Schedule</h5>
