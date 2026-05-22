@@ -184,6 +184,14 @@ export function isAnikaiEpisodeId(episodeId?: string | null) {
   );
 }
 
+export function toAnikaiPageEpisodeId(episodeId?: string | null) {
+  if (!episodeId) return null;
+  if (isAnikaiEpisodeId(episodeId)) return episodeId;
+  const match = episodeId.match(/^([^?]+)\?ep=(\d+)$/i);
+  if (!match) return null;
+  return makeAnikaiPageEpisodeId(match[1], Number(match[2]) || 0);
+}
+
 function parseAnikaiEpisodeId(episodeId: string): AnikaiEpisodeRef | null {
   if (episodeId.startsWith("anikai-page:")) {
     const [, animeId, number] = episodeId.split(":");

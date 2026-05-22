@@ -130,8 +130,13 @@ export async function GET(req: Request) {
       );
     }
 
+    const sourceEpisodeId =
+      serversPayload.fallback && servers?.episodeId
+        ? servers.episodeId
+        : episodeId;
+
     const sourceResult = await resolveEpisodeSources({
-      animeEpisodeId: episodeId,
+      animeEpisodeId: sourceEpisodeId,
       category: selected.category,
       server: selected.serverName,
     });

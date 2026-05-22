@@ -4,6 +4,7 @@ import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
   getAnikaiEpisodeServers,
   isAnikaiEpisodeId,
+  toAnikaiPageEpisodeId,
 } from "@/lib/anikai";
 import {
   getAniwatchWpEpisodeServers,
@@ -35,6 +36,12 @@ const sanitize = (raw?: string | null) => {
   if (!m) return decoded.split("?")[0];
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
 };
+
+function isLegacyAnikaiPageEpisodeId(episodeId: string) {
+  const match = episodeId.match(/^([^?]+)\?ep=(\d+)$/i);
+  if (!match) return false;
+  return /-[a-z0-9]*[a-z][a-z0-9]{2,4}$/i.test(match[1]);
+}
 
 export async function resolveEpisodeServers(options: {
   animeEpisodeIdRaw?: string | null;
@@ -69,7 +76,11 @@ export async function resolveEpisodeServers(options: {
     return {
       ok: true as const,
       status: 200,
-      body: { data: cached.data, fromCache: true },
+      body: {
+        data: cached.data,
+        fromCache: true,
+        fallback: isAnikaiEpisodeId(cached.data?.episodeId),
+      },
     };
   }
 
@@ -94,6 +105,23 @@ export async function resolveEpisodeServers(options: {
         body: { error: scrapeErr?.message || "AnimeKai scrape failed" },
       };
     }
+  }
+
+  const legacyAnikaiFallbackId = isLegacyAnikaiPageEpisodeId(animeEpisodeId)
+    ? toAnikaiPageEpisodeId(animeEpisodeId)
+    : null;
+  if (legacyAnikaiFallbackId) {
+    const data = await getAnikaiEpisodeServers(legacyAnikaiFallbackId);
+    memoryCache.set(cacheKey, { data, fetchedAt: now });
+    return {
+      ok: true as const,
+      status: 200,
+      body: {
+        data,
+        fallback: true,
+        fallbackReason: "legacy AnimeKai episode URL",
+      },
+    };
   }
 
   if (isAniwatchWpEpisodeId(animeEpisodeId)) {
@@ -138,6 +166,30 @@ export async function resolveEpisodeServers(options: {
       message: scrapeErr?.message,
       stack: scrapeErr?.stack,
     });
+
+    const anikaiFallbackId = toAnikaiPageEpisodeId(animeEpisodeId);
+    if (anikaiFallbackId) {
+      try {
+        const fallbackData = await getAnikaiEpisodeServers(anikaiFallbackId);
+        memoryCache.set(cacheKey, { data: fallbackData, fetchedAt: now });
+        return {
+          ok: true as const,
+          status: 200,
+          body: {
+            data: fallbackData,
+            fallback: true,
+            fallbackReason: scrapeErr?.message || "scraper failed",
+          },
+        };
+      } catch (fallbackErr: any) {
+        console.error("[EPISODE_SERVERS] AnimeKai legacy fallback failed:", {
+          animeEpisodeId,
+          anikaiFallbackId,
+          message: fallbackErr?.message,
+        });
+      }
+    }
+
     if (cached) {
       console.warn("[EPISODE_SERVERS] using stale cached data after failure", cacheKey);
       return {
