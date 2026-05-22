@@ -38,6 +38,68 @@ function createEmptyAnimeData(): IAnimeData {
   };
 }
 
+function titleFromSlug(slug: string) {
+  return slug
+    .split("?")[0]
+    .replace(/-\d+$/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function createFallbackAnimeDetails(animeId: string): IAnimeDetails {
+  const title = titleFromSlug(animeId) || "Anime";
+  return {
+    anime: {
+      info: {
+        id: animeId,
+        anilistId: 0,
+        malId: 0,
+        name: title,
+        poster: "/icon.png",
+        description:
+          "Details are temporarily unavailable because the upstream anime source blocked this request. Please try again later.",
+        stats: {
+          rating: "",
+          quality: "",
+          episodes: {
+            sub: 0,
+            dub: 0,
+          },
+          type: "",
+          duration: "",
+        },
+        promotionalVideos: [],
+        charactersVoiceActors: [],
+      },
+      moreInfo: {
+        japanese: "",
+        synonyms: "",
+        aired: "",
+        premiered: "",
+        duration: "",
+        status: "",
+        malscore: "",
+        genres: [],
+        studios: "",
+        producers: [],
+      },
+    },
+    seasons: [],
+    mostPopularAnimes: [],
+    relatedAnimes: [],
+    recommendedAnimes: [],
+  };
+}
+
+function createEmptyEpisodes(): IEpisodes {
+  return {
+    totalEpisodes: 0,
+    episodes: [],
+  };
+}
+
 function isAniwatchHomePageUnavailable(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -92,23 +154,47 @@ export async function getCachedHomePageData() {
 }
 
 export async function getCachedAnimeDetails(animeId: string) {
-  return readThroughCache<IAnimeDetails>(
-    {
-      key: `anime-details:v4:${animeId}`,
-      ttlSeconds: 60 * 30,
-    },
-    () => getAniwatchAnimeDetails(animeId),
-  );
+  try {
+    return await readThroughCache<IAnimeDetails>(
+      {
+        key: `anime-details:v4:${animeId}`,
+        ttlSeconds: 60 * 30,
+      },
+      () => getAniwatchAnimeDetails(animeId),
+    );
+  } catch (error) {
+    if (!isAniwatchHomePageUnavailable(error)) {
+      throw error;
+    }
+
+    console.warn(
+      `[ANIME_DETAILS] Falling back to minimal details for ${animeId}:`,
+      error,
+    );
+    return createFallbackAnimeDetails(animeId);
+  }
 }
 
 export async function getCachedAnimeEpisodes(animeId: string) {
-  return readThroughCache<IEpisodes>(
-    {
-      key: `anime-episodes:v4:${animeId}`,
-      ttlSeconds: 60 * 30,
-    },
-    () => getAniwatchAnimeEpisodes(animeId),
-  );
+  try {
+    return await readThroughCache<IEpisodes>(
+      {
+        key: `anime-episodes:v4:${animeId}`,
+        ttlSeconds: 60 * 30,
+      },
+      () => getAniwatchAnimeEpisodes(animeId),
+    );
+  } catch (error) {
+    if (!isAniwatchHomePageUnavailable(error)) {
+      throw error;
+    }
+
+    console.warn(
+      `[ANIME_EPISODES] Falling back to empty episodes for ${animeId}:`,
+      error,
+    );
+    return createEmptyEpisodes();
+  }
 }
 
 export async function getCachedSearchResults(params: SearchAnimeParams) {
