@@ -2,6 +2,16 @@
 
 const UPSTASH_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_FAILURE_COOLDOWN_MS = 60 * 1000;
+
+let redisDisabledUntil = 0;
+
+class RedisUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RedisUnavailableError";
+  }
+}
 
 function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
   if (!headers) return {};
@@ -37,8 +47,35 @@ export function getRedis() {
   };
 }
 
+function isRedisTemporarilyDisabled() {
+  return redisDisabledUntil > Date.now();
+}
+
+function disableRedisTemporarily() {
+  redisDisabledUntil = Date.now() + REDIS_FAILURE_COOLDOWN_MS;
+}
+
+function isTransientRedisError(message: string) {
+  return (
+    message.includes("ENOTFOUND") ||
+    message.includes("fetch failed") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("ETIMEDOUT")
+  );
+}
+
+function isRedisUnavailableError(error: unknown) {
+  return error instanceof RedisUnavailableError;
+}
+
 // Internal helper to perform fetch requests to Upstash with retry logic
 async function upstashFetch(path: string, init?: RequestInit, attempt: number = 1): Promise<Response> {
+  if (isRedisTemporarilyDisabled()) {
+    throw new RedisUnavailableError(
+      "Upstash Redis temporarily disabled after recent failures",
+    );
+  }
+
   const { url, token } = getRedis();
   const fullUrl = url + path;
   try {
@@ -71,13 +108,30 @@ async function upstashFetch(path: string, init?: RequestInit, attempt: number = 
     }
     return res;
   } catch (err: any) {
-    if (attempt < 3) {
-      console.warn(`Redis fetch attempt ${attempt} failed: ${err.message}`);
-      return upstashFetch(path, init, attempt + 1);
-    } else {
-      console.error(`Redis fetch failed after ${attempt} attempts: ${err.message}`);
+    if (isRedisUnavailableError(err)) {
       throw err;
     }
+
+    const message = String(err?.message || "");
+    const isTransient = isTransientRedisError(message);
+
+    if (attempt < 3) {
+      console.warn(`Redis fetch attempt ${attempt} failed: ${message}`);
+      return upstashFetch(path, init, attempt + 1);
+    }
+
+    if (isTransient) {
+      disableRedisTemporarily();
+      console.warn(
+        `Redis temporarily disabled for ${REDIS_FAILURE_COOLDOWN_MS}ms after ${attempt} failed attempts: ${message}`,
+      );
+      throw new RedisUnavailableError(
+        "Upstash Redis temporarily disabled after recent failures",
+      );
+    }
+
+    console.error(`Redis fetch failed after ${attempt} attempts: ${message}`);
+    throw err;
   }
 }
 
@@ -88,6 +142,9 @@ async function upstashFetch(path: string, init?: RequestInit, attempt: number = 
 export async function getCached<T = any>(key: string): Promise<T | null> {
   if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
     // Caching not configured
+    return null;
+  }
+  if (isRedisTemporarilyDisabled()) {
     return null;
   }
   try {
@@ -117,6 +174,9 @@ export async function getCached<T = any>(key: string): Promise<T | null> {
     // Unexpected response structure
     return null;
   } catch (err) {
+    if (isRedisUnavailableError(err)) {
+      return null;
+    }
     console.error(`getCached failed for key "${key}":`, err);
     return null;
   }
@@ -128,6 +188,9 @@ export async function getCached<T = any>(key: string): Promise<T | null> {
  */
 export async function getCachedBuffer(key: string): Promise<Buffer | null> {
   if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
+    return null;
+  }
+  if (isRedisTemporarilyDisabled()) {
     return null;
   }
   try {
@@ -156,6 +219,9 @@ export async function getCachedBuffer(key: string): Promise<Buffer | null> {
     }
     return null;
   } catch (err) {
+    if (isRedisUnavailableError(err)) {
+      return null;
+    }
     console.error(`getCachedBuffer failed for key "${key}":`, err);
     return null;
   }
@@ -170,6 +236,9 @@ export async function getCachedBuffer(key: string): Promise<Buffer | null> {
 export async function setCached(key: string, value: any, ttlSeconds?: number): Promise<void> {
   if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
     console.warn('Caching not configured; skipping setCached for key', key);
+    return;
+  }
+  if (isRedisTemporarilyDisabled()) {
     return;
   }
   if (value === undefined) {
@@ -206,6 +275,9 @@ export async function setCached(key: string, value: any, ttlSeconds?: number): P
       console.warn(`Unexpected Redis response for setCached("${key}"):`, data);
     }
   } catch (err) {
+    if (isRedisUnavailableError(err)) {
+      return;
+    }
     console.error(`setCached failed for key "${key}":`, err);
   }
 }
@@ -217,10 +289,16 @@ export async function deleteCached(key: string): Promise<void> {
   if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
     return;
   }
+  if (isRedisTemporarilyDisabled()) {
+    return;
+  }
   try {
     await upstashFetch(`/del/${encodeURIComponent(key)}`);
     // (We could check the result count, but not necessary for a deletion attempt)
   } catch (err) {
+    if (isRedisUnavailableError(err)) {
+      return;
+    }
     console.error(`deleteCached failed for key "${key}":`, err);
   }
 }

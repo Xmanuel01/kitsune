@@ -25,7 +25,7 @@ const LatestEpisodesAnime = (props: Props) => {
               subTitle={anime.type}
               poster={anime.poster}
               className="self-center justify-self-center"
-              href={`${ROUTES.WATCH}?anime=${anime.id}&episode=${anime.id}&type=latest`}
+              href={`${ROUTES.WATCH}?anime=${anime.id}`}
               episodeCard
               sub={anime.episodes.sub}
               dub={anime.episodes.dub}

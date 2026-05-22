@@ -4,7 +4,6 @@ import {
   AvatarFallback,
   AvatarImage,
 } from "@/components/ui/avatar";
-import { env } from "next-runtime-env";
 import { supabase } from "@/lib/supabaseClient";
 
 type Props = {

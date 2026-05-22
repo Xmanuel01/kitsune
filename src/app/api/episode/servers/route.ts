@@ -1,6 +1,10 @@
 // src/app/api/episode/servers/route.ts
 
-import { getHiAnimeScraper } from "@/lib/hianime";
+import { getAniwatchScraper } from "@/lib/aniwatch";
+import {
+  getAniwatchWpEpisodeServers,
+  isAniwatchWpEpisodeId,
+} from "@/lib/aniwatch-wp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,71 +32,124 @@ const sanitize = (raw?: string | null) => {
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
 };
 
-export async function GET(req: Request) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const animeEpisodeIdRaw = searchParams.get("animeEpisodeId");
-    const category = searchParams.get("category") || "sub";
-    const server = searchParams.get("server") || "hd-1";
+export async function resolveEpisodeServers(options: {
+  animeEpisodeIdRaw?: string | null;
+  category?: string | null;
+  server?: string | null;
+}) {
+  const animeEpisodeId = sanitize(options.animeEpisodeIdRaw);
+  const category = options.category || "sub";
+  const server = options.server || "hd-1";
 
-    if (!animeEpisodeIdRaw) {
-      return Response.json(
-        { error: "animeEpisodeId is required" },
-        { status: 400 },
-      );
-    }
+  if (!options.animeEpisodeIdRaw) {
+    return {
+      ok: false as const,
+      status: 400,
+      body: { error: "animeEpisodeId is required" },
+    };
+  }
 
-    const animeEpisodeId = sanitize(animeEpisodeIdRaw);
-    if (!animeEpisodeId) {
-      return Response.json(
-        { error: "invalid animeEpisodeId" },
-        { status: 400 },
-      );
-    }
+  if (!animeEpisodeId) {
+    return {
+      ok: false as const,
+      status: 400,
+      body: { error: "invalid animeEpisodeId" },
+    };
+  }
 
-    // Reuse fresh data if we already fetched recently
-    const cacheKey = `${animeEpisodeId}::${category}::${server}`;
-    const cached = memoryCache.get(cacheKey);
-    const now = Date.now();
-    if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
-      console.debug("[EPISODE_SERVERS] returning cached data", cacheKey);
-      return Response.json({ data: cached.data, fromCache: true });
-    }
+  const cacheKey = `${animeEpisodeId}::${category}::${server}`;
+  const cached = memoryCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+    console.debug("[EPISODE_SERVERS] returning cached data", cacheKey);
+    return {
+      ok: true as const,
+      status: 200,
+      body: { data: cached.data, fromCache: true },
+    };
+  }
 
-    const scraper = await getHiAnimeScraper();
-    if (!scraper) {
-      console.error("[EPISODE_SERVERS] HiAnime scraper unavailable");
-      return Response.json(
-        { error: "scraper unavailable" },
-        { status: 503 },
-      );
-    }
-
-    let data: any;
+  if (isAniwatchWpEpisodeId(animeEpisodeId)) {
     try {
-      data = await scraper.getEpisodeServers(animeEpisodeId);
+      const data = await getAniwatchWpEpisodeServers(animeEpisodeId);
+      memoryCache.set(cacheKey, { data, fetchedAt: now });
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data },
+      };
     } catch (scrapeErr: any) {
-      console.error("[EPISODE_SERVERS] scraper.getEpisodeServers error:", {
+      console.error("[EPISODE_SERVERS] aniwatch.co.at episode server error:", {
         animeEpisodeId,
         message: scrapeErr?.message,
         stack: scrapeErr?.stack,
       });
-      // fallback to stale cache if available instead of hard failing
-      if (cached) {
-        console.warn("[EPISODE_SERVERS] using stale cached data after failure", cacheKey);
-        return Response.json({ data: cached.data, fromCache: true, stale: true });
-      }
-      const message = scrapeErr?.message || "scrape failed";
-      return Response.json(
-        { error: `scraper error: ${message}` },
-        { status: 502 },
-      );
+      return {
+        ok: false as const,
+        status: 502,
+        body: { error: scrapeErr?.message || "aniwatch.co.at scrape failed" },
+      };
     }
+  }
 
-    // cache freshly fetched data in-memory to reduce upstream pressure
-    memoryCache.set(cacheKey, { data, fetchedAt: now });
+  const scraper = await getAniwatchScraper();
+  if (!scraper) {
+    console.error("[EPISODE_SERVERS] Aniwatch scraper unavailable");
+    return {
+      ok: false as const,
+      status: 503,
+      body: { error: "scraper unavailable" },
+    };
+  }
 
-    return Response.json({ data });
+  let data: any;
+  try {
+    data = await scraper.getEpisodeServers(animeEpisodeId);
+  } catch (scrapeErr: any) {
+    console.error("[EPISODE_SERVERS] scraper.getEpisodeServers error:", {
+      animeEpisodeId,
+      message: scrapeErr?.message,
+      stack: scrapeErr?.stack,
+    });
+    if (cached) {
+      console.warn("[EPISODE_SERVERS] using stale cached data after failure", cacheKey);
+      return {
+        ok: true as const,
+        status: 200,
+        body: {
+          data: cached.data,
+          fromCache: true,
+          stale: true,
+        },
+      };
+    }
+    const message = scrapeErr?.message || "scrape failed";
+    return {
+      ok: false as const,
+      status: 502,
+      body: { error: `scraper error: ${message}` },
+    };
+  }
+
+  memoryCache.set(cacheKey, { data, fetchedAt: now });
+
+  return {
+    ok: true as const,
+    status: 200,
+    body: { data },
+  };
+}
+
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const result = await resolveEpisodeServers({
+      animeEpisodeIdRaw: searchParams.get("animeEpisodeId"),
+      category: searchParams.get("category"),
+      server: searchParams.get("server"),
+    });
+
+    return Response.json(result.body, { status: result.status });
   } catch (err: any) {
     console.error("[EPISODE_SERVERS] API Error:", {
       message: err?.message,

@@ -1,3 +1,8 @@
+import { getCachedAnimeEpisodes } from "@/lib/anime-data";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET(
   request: Request,
   props: { params: Promise<{ id: string }> },
@@ -5,11 +10,15 @@ export async function GET(
   const params = await props.params;
   try {
     const { id } = params;
-    const mod = await import("@/lib/hianime");
-    const { hianime } = mod;
-    if (!hianime) throw new Error('hianime module unavailable');
-    const data = await hianime.getEpisodes(id);
-    return Response.json({ data });
+    const data = await getCachedAnimeEpisodes(id);
+    return Response.json(
+      { data },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=3600",
+        },
+      },
+    );
   } catch (err) {
     console.log(err);
     return Response.json({ error: "something went wrong" }, { status: 500 });

@@ -1,4 +1,5 @@
 import { SearchAnimeParams } from "@/types/anime";
+import { getCachedSearchResults } from "@/lib/anime-data";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,19 +8,15 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const params = parseSearchParams(searchParams);
-    const mod = await import("@/lib/hianime");
-    const { hianime } = mod;
-    if (!hianime) throw new Error('hianime module unavailable');
-    const data = await hianime.search(params.q, params.page, {
-      type: params.type,
-      status: params.status,
-      rated: params.rated,
-      season: params.season,
-      language: params.language,
-      sort: params.sort,
-      genres: params.genres,
-    });
-    return Response.json({ data });
+    const data = await getCachedSearchResults(params);
+    return Response.json(
+      { data },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=300, stale-while-revalidate=900",
+        },
+      },
+    );
   } catch (err) {
     console.log(err);
     return Response.json({ error: "something went wrong" }, { status: 500 });

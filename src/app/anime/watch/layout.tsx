@@ -68,6 +68,7 @@ const Layout = (props: Props) => {
     [searchParams],
   );
   const episodeId = searchParams.get("episode");
+  const isLatestEpisode = searchParams.get("type") === "latest";
 
   const [animeId, setAnimeId] = useState<string | null>(currentAnimeId);
 
@@ -76,10 +77,12 @@ const Layout = (props: Props) => {
       setAnimeId(currentAnimeId);
     }
 
-    if (episodeId) {
+    if (episodeId && !isLatestEpisode) {
       setSelectedEpisode(episodeId);
+    } else {
+      setSelectedEpisode("");
     }
-  }, [currentAnimeId, episodeId, animeId, setSelectedEpisode]);
+  }, [currentAnimeId, episodeId, isLatestEpisode, animeId, setSelectedEpisode]);
 
   const { data: anime, isLoading } = useGetAnimeDetails(animeId as string);
 
@@ -120,6 +123,18 @@ const Layout = (props: Props) => {
       toast.error("Error adding to list", { style: { background: "red" } });
     }
   };
+
+  useEffect(() => {
+    const addCurrentAnimeToList = () => {
+      void handleSelect("watching");
+    };
+
+    window.addEventListener("kitsune-open-watchlist", addCurrentAnimeToList);
+    return () => {
+      window.removeEventListener("kitsune-open-watchlist", addCurrentAnimeToList);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentAnimeId, anime?.anime.info.name, anime?.anime.info.poster, selected]);
 
   const { data: episodes, isLoading: episodeLoading } = useGetAllEpisodes(
     animeId as string,

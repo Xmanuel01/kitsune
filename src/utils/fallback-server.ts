@@ -1,7 +1,7 @@
 import { IEpisodeServers } from "@/types/episodes";
 
 type Preference = {
-  server: string;
+  serverName: string;
   key: "sub" | "dub" | "raw";
 };
 
@@ -12,9 +12,22 @@ export function getFallbackServer(serversData: IEpisodeServers | undefined): {
   const preference = localStorage.getItem("serverPreference");
 
   if (preference) {
-    const parsedPreference = JSON.parse(preference) as Preference;
+    const parsedPreference = JSON.parse(preference) as Partial<Preference>;
     if (parsedPreference?.key) {
       const serverList = serversData?.[parsedPreference.key];
+      const preferredServer = parsedPreference.serverName
+        ? serverList?.find(
+            (server) => server.serverName === parsedPreference.serverName,
+          )
+        : null;
+
+      if (preferredServer?.serverName) {
+        return {
+          serverName: preferredServer.serverName,
+          key: parsedPreference.key,
+        };
+      }
+
       if (serverList && serverList[0]?.serverName) {
         return {
           serverName: serverList[0].serverName,

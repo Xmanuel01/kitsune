@@ -42,6 +42,7 @@ function AnimeSchedule() {
   }, [currentSelectedTab, getDateForWeekday]);
 
   const { isLoading, data } = useGetAnimeSchedule(selectedDate);
+  const scheduledAnimes = data?.scheduledAnimes ?? [];
 
   return (
     <Container className="flex flex-col gap-5 py-10 items-center lg:items-start">
@@ -77,34 +78,40 @@ function AnimeSchedule() {
             <TabsContent key={day} value={day}>
               {day === currentSelectedTab && (
                 <div className="flex flex-col gap-5 w-full p-4">
-                  {data?.scheduledAnimes.map((anime) => (
-                    <div
-                      key={`${anime.id}-${anime.airingTimestamp}`}
-                      className="flex items-center justify-between"
-                    >
-                      <div className="flex items-center gap-x-5">
-                        <h3 className="text-sm text-gray-300 font-semibold">
-                          {new Date(anime.airingTimestamp).toLocaleTimeString(
-                            "en-US",
-                            {
-                              hour: "numeric",
-                              minute: "2-digit",
-                              hour12: true,
-                            },
-                          )}
-                        </h3>
-                        <h3 className="text-sm font-semibold">{anime.name}</h3>
+                  {scheduledAnimes.length ? (
+                    scheduledAnimes.map((anime) => (
+                      <div
+                        key={anime.id}
+                        className="flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-x-5">
+                          <h3 className="text-sm text-gray-300 font-semibold">
+                            {new Date(anime.airingTimestamp).toLocaleTimeString(
+                              "en-US",
+                              {
+                                hour: "numeric",
+                                minute: "2-digit",
+                                hour12: true,
+                              },
+                            )}
+                          </h3>
+                          <h3 className="text-sm font-semibold">{anime.name}</h3>
+                        </div>
+                        <Link href={`${ROUTES.ANIME_DETAILS}/${anime.id}`}>
+                          <Button
+                            className="w-[8rem] bg-[#e9376b] text-white hover:bg-[#e9376b]"
+                            size="sm"
+                          >
+                            Episode {anime.episode}
+                          </Button>
+                        </Link>
                       </div>
-                      <Link href={`${ROUTES.ANIME_DETAILS}/${anime.id}`}>
-                        <Button
-                          className="w-[8rem] bg-[#e9376b] text-white hover:bg-[#e9376b]"
-                          size="sm"
-                        >
-                          Episode {anime.episode}
-                        </Button>
-                      </Link>
+                    ))
+                  ) : (
+                    <div className="py-4 text-sm text-gray-400">
+                      No schedule entries are available right now.
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
             </TabsContent>

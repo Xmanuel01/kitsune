@@ -61,6 +61,21 @@ const HeroSection = (props: IHeroSectionProps) => {
 };
 
 const HeroCarouselItem = ({ anime }: { anime: SpotlightAnime }) => {
+  const hasBannerImage = Boolean(anime?.bannerImage);
+  const heroImage = anime?.bannerImage || anime?.poster;
+  const heroInfo = [
+    anime.type,
+    ...(anime.genres?.length ? anime.genres : anime.otherInfo || []),
+  ]
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 5);
+  const heroStats = [
+    { label: "Rating", value: anime.rating },
+    { label: "Release", value: anime.release },
+    { label: "Quality", value: anime.quality },
+  ].filter((item) => item.value);
+
   // const [isHovered, setIsHovered] = useState(false);
 
   // const hoverTimeoutRef = React.useRef<NodeJS.Timeout | null>(null); // Use ref to store the timeout ID
@@ -81,7 +96,12 @@ const HeroCarouselItem = ({ anime }: { anime: SpotlightAnime }) => {
   return (
     <div
       className={`w-full bg-cover bg-no-repeat bg-center h-[80vh] relative`}
-      style={{ backgroundImage: `url(${anime?.poster})` }}
+      style={{
+        backgroundColor: "#0f172a",
+        backgroundImage: `url(${heroImage})`,
+        backgroundPosition: hasBannerImage ? "center" : "right 8rem center",
+        backgroundSize: hasBannerImage ? "cover" : "auto 100%",
+      }}
       // onMouseEnter={handleMouseEnter}
       // onMouseLeave={handleMouseLeave}
     >
@@ -121,11 +141,26 @@ const HeroCarouselItem = ({ anime }: { anime: SpotlightAnime }) => {
                   <span>{anime.episodes.dub}</span>
                 </Badge>
               )}
+              {heroInfo.map((item) => (
+                <span key={item} className="text-sm font-semibold text-white">
+                  {item}
+                </span>
+              ))}
             </div>
 
             <p className="text-lg line-clamp-4">
               {parse(anime?.description as string)}
             </p>
+            {heroStats.length > 0 && (
+              <div className="grid w-full max-w-[31.25rem] grid-cols-3 rounded-lg bg-black/70 px-6 py-4">
+                {heroStats.map((item) => (
+                  <div key={item.label} className="space-y-1">
+                    <p className="text-sm text-gray-400">{item.label}</p>
+                    <p className="text-xl font-bold text-white">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-5 !mt-5">
               <ButtonLink
                 href={`${ROUTES.ANIME_DETAILS}/${anime.id}`}

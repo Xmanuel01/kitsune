@@ -4,8 +4,8 @@ import React, {
   useEffect,
   useRef,
   useMemo,
-  useState,
   HTMLAttributes,
+  useCallback,
 } from "react";
 import Artplayer from "artplayer";
 type Option = any;
@@ -37,6 +37,8 @@ interface ArtPlayerProps extends HTMLAttributes<HTMLDivElement> {
   episodes?: IEpisodes;
   getInstance?: (art: Artplayer) => void;
   autoSkip?: boolean;
+  autoPlay?: boolean;
+  onEnded?: () => void;
   serversData: IEpisodeServers;
 }
 
@@ -64,15 +66,20 @@ function KitsunePlayer({
   subOrDub,
   getInstance,
   autoSkip = true,
+  onEnded,
   serversData,
   episodes,
+  autoPlay = true,
   ...rest
 }: ArtPlayerProps): JSX.Element {
   const artContainerRef = useRef<HTMLDivElement>(null);
   const artInstanceRef = useRef<Artplayer | null>(null);
   const hlsInstanceRef = useRef<Hls | null>(null);
-
-  const [isAutoSkipEnabled, setIsAutoSkipEnabled] = useState(autoSkip);
+  const autoplayStartedRef = useRef(false);
+  const autoplayInFlightRef = useRef(false);
+  const autoPlayRef = useRef(autoPlay);
+  const autoSkipRef = useRef(autoSkip);
+  const onEndedRef = useRef(onEnded);
 
   const bookmarkIdRef = useRef<string | null>(null);
   const watchHistoryIdsRef = useRef<string[]>([]);
@@ -87,9 +94,79 @@ function KitsunePlayer({
     populate: false,
   });
 
+  const saveLocalWatchProgress = useCallback(
+    (current: number, duration: number) => {
+      if (!animeInfo.id || !serversData.episodeId || !Number.isFinite(current)) {
+        return;
+      }
+
+      const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+      try {
+        const raw = localStorage.getItem("watch-progress");
+        const progress = raw ? JSON.parse(raw) : {};
+        const animeProgress = progress[animeInfo.id] || {};
+        animeProgress[serversData.episodeId] = {
+          current: Math.round(current),
+          timestamp: Math.round(safeDuration),
+        };
+        progress[animeInfo.id] = animeProgress;
+        localStorage.setItem("watch-progress", JSON.stringify(progress));
+
+        if (current >= WATCH_PROGRESS_MIN_WATCH_TIME) {
+          const watchedRaw = localStorage.getItem("watched");
+          const watchedDetails = watchedRaw ? JSON.parse(watchedRaw) : [];
+          if (Array.isArray(watchedDetails)) {
+            const existingAnime = watchedDetails.find(
+              (watchedAnime: any) => watchedAnime?.anime?.id === animeInfo.id,
+            );
+
+            if (!existingAnime) {
+              watchedDetails.push({
+                anime: {
+                  id: animeInfo.id,
+                  title: animeInfo.title,
+                  poster: animeInfo.image,
+                },
+                episodes: [serversData.episodeId],
+              });
+            } else if (!existingAnime.episodes?.includes(serversData.episodeId)) {
+              existingAnime.episodes = [
+                ...(Array.isArray(existingAnime.episodes) ? existingAnime.episodes : []),
+                serversData.episodeId,
+              ];
+            }
+
+            localStorage.setItem("watched", JSON.stringify(watchedDetails));
+          }
+        }
+
+        window.dispatchEvent(new CustomEvent("kitsune-watch-progress"));
+      } catch {
+        // ignore storage errors
+      }
+    },
+    [animeInfo.id, animeInfo.image, animeInfo.title, serversData.episodeId],
+  );
+
   useEffect(() => {
-    setIsAutoSkipEnabled(autoSkip);
+    autoSkipRef.current = autoSkip;
   }, [autoSkip]);
+
+  useEffect(() => {
+    autoPlayRef.current = autoPlay;
+    if (autoPlay) {
+      const art = artInstanceRef.current;
+      if (art?.video?.paused) {
+        void art.play().catch(() => {
+          // Browser autoplay rules may still block playback until user interaction.
+        });
+      }
+    }
+  }, [autoPlay]);
+
+  useEffect(() => {
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
 
   // Prewarm next episodes
   useEffect(() => {
@@ -582,6 +659,8 @@ function KitsunePlayer({
     };
 
     let currentHlsInstanceForCleanup: Hls | null = null;
+    autoplayStartedRef.current = false;
+    autoplayInFlightRef.current = false;
 
     const finalOptions: Option = {
       container: artContainerRef.current,
@@ -694,6 +773,10 @@ function KitsunePlayer({
                 }
               }
             });
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              void attemptAutoplay();
+            });
             
             // Load the source and attach to video element
             hls.loadSource(url);
@@ -721,6 +804,13 @@ function KitsunePlayer({
             videoElement.canPlayType("application/vnd.apple.mpegurl")
           ) {
             videoElement.src = url;
+            videoElement.addEventListener(
+              "loadedmetadata",
+              () => {
+                void attemptAutoplay();
+              },
+              { once: true },
+            );
           } else {
             artPlayerInstance.notice.show =
               "HLS playback is not supported on your browser.";
@@ -804,7 +894,7 @@ function KitsunePlayer({
       volume: 0.8,
       isLive: false,
       muted: false,
-      autoplay: false,
+      autoplay: autoPlayRef.current,
       autoOrientation: true,
       pip: true,
       autoSize: false,
@@ -835,6 +925,44 @@ function KitsunePlayer({
     console.log(finalOptions);
     const art = new Artplayer(finalOptions);
     artInstanceRef.current = art;
+
+    const attemptAutoplay = async () => {
+      const currentArt = artInstanceRef.current;
+      if (!currentArt?.video) return;
+      if (!autoPlayRef.current) return;
+      if (!currentArt.video.paused) return;
+      if (autoplayStartedRef.current || autoplayInFlightRef.current) return;
+
+      autoplayInFlightRef.current = true;
+      const autoplayUnlocked =
+        typeof window !== "undefined" &&
+        window.sessionStorage.getItem("kitsune-autoplay-unlocked") === "1";
+
+      try {
+        await currentArt.play();
+        autoplayStartedRef.current = true;
+      } catch (error) {
+        console.warn("Autoplay was blocked or failed, retrying muted:", error);
+
+        const previousMuted = currentArt.video.muted;
+        currentArt.video.muted = true;
+
+        try {
+          await currentArt.play();
+          autoplayStartedRef.current = true;
+          if (autoplayUnlocked) {
+            requestAnimationFrame(() => {
+              currentArt.video.muted = previousMuted;
+            });
+          }
+        } catch (mutedError) {
+          currentArt.video.muted = previousMuted;
+          console.warn("Muted autoplay failed:", mutedError);
+        }
+      } finally {
+        autoplayInFlightRef.current = false;
+      }
+    };
 
     const handleTimeUpdate = () => {
       const art = artInstanceRef.current;
@@ -868,7 +996,7 @@ function KitsunePlayer({
 
       const manualSkip: any = (art as any).controls["manual-skip"];
 
-      if (isAutoSkipEnabled) {
+      if (autoSkipRef.current) {
         if (manualSkip?.style?.display !== "none") {
           if (manualSkip.style) manualSkip.style.display = "none";
         }
@@ -926,6 +1054,7 @@ function KitsunePlayer({
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) &&
         Date.now() - lastUpdateTimeRef.current > WATCH_PROGRESS_UPDATE_INTERVAL
       ) {
+        saveLocalWatchProgress(currentTime, duration);
         syncWatchProgress(
           bookmarkIdRef.current,
           watchedRecordIdRef.current,
@@ -952,7 +1081,38 @@ function KitsunePlayer({
       console.log("Player ready, starting from beginning.");
       initialSeekTimeRef.current = null;
       art.seek = 0;
+      void attemptAutoplay();
     });
+
+    art.on("video:canplay", () => {
+      void attemptAutoplay();
+    });
+
+    art.on("video:play", () => {
+      autoplayStartedRef.current = true;
+    });
+
+    const handleEnded = () => {
+      const currentArt = artInstanceRef.current;
+      const duration = currentArt?.duration || 0;
+      if (duration > 0) {
+        saveLocalWatchProgress(duration, duration);
+        syncWatchProgress(bookmarkIdRef.current, watchedRecordIdRef.current, {
+          episodeId: serversData.episodeId,
+          episodeNumber: parseInt(serversData.episodeNo),
+          current: duration,
+          duration,
+        }).then((id) => {
+          if (id) watchedRecordIdRef.current = id;
+        });
+      }
+
+      if (typeof onEndedRef.current === "function") {
+        onEndedRef.current();
+      }
+    };
+
+    art.on("video:ended", handleEnded);
 
     art.on("resize", () => {
       if (!artInstanceRef.current) return;
@@ -982,6 +1142,7 @@ function KitsunePlayer({
     const handleInteractionUpdate = () => {
       const art = artInstanceRef.current;
       if (!art || !art.duration || art.duration <= 0) return;
+      saveLocalWatchProgress(art.currentTime, art.duration);
       if (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current) {
         console.log("Syncing progress on pause/seek.");
         if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
@@ -1037,6 +1198,7 @@ function KitsunePlayer({
         art.duration > 0 &&
         (hasMetMinWatchTimeRef.current || watchedRecordIdRef.current)
       ) {
+        saveLocalWatchProgress(art.currentTime, art.duration);
         console.log("Syncing final progress on unmount.");
         syncWatchProgress(
           bookmarkIdRef.current,
@@ -1060,6 +1222,9 @@ function KitsunePlayer({
         art.off("video:pause", handleInteractionUpdate);
         art.off("video:seeked", handleInteractionUpdate);
         art.off("video:timeupdate", handleTimeUpdate);
+        art.off("video:canplay");
+        art.off("video:play");
+        art.off("video:ended", handleEnded);
 
         console.log("Cleanup: Pausing player");
         art.pause();
@@ -1106,7 +1271,7 @@ function KitsunePlayer({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uri, episodeInfo, animeInfo, subOrDub, getInstance, autoSkip]);
+  }, [uri, episodeInfo, animeInfo, subOrDub, getInstance]);
 
   // --- Render ---
   return (
