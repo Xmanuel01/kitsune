@@ -179,7 +179,7 @@ export async function getCachedAnimeEpisodes(animeId: string) {
   try {
     return await readThroughCache<IEpisodes>(
       {
-        key: `anime-episodes:v4:${animeId}`,
+        key: `anime-episodes:v5:${animeId}`,
         ttlSeconds: 60 * 30,
       },
       () => getAniwatchAnimeEpisodes(animeId),

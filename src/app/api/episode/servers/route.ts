@@ -32,6 +32,27 @@ const sanitize = (raw?: string | null) => {
   return m[1] + (m[3] ? `?ep=${m[3]}` : "");
 };
 
+function extractEpisodeNumber(episodeId: string) {
+  return episodeId.match(/[?&]ep=(\d+)/i)?.[1] || "0";
+}
+
+function createFallbackEpisodeServers(episodeId: string) {
+  const episodeNo = extractEpisodeNumber(episodeId);
+  return {
+    episodeId,
+    episodeNo,
+    sub: [
+      { serverId: 1, serverName: "hd-1" },
+      { serverId: 2, serverName: "hd-2" },
+    ],
+    dub: [
+      { serverId: 1, serverName: "hd-1" },
+      { serverId: 2, serverName: "hd-2" },
+    ],
+    raw: [],
+  };
+}
+
 export async function resolveEpisodeServers(options: {
   animeEpisodeIdRaw?: string | null;
   category?: string | null;
@@ -66,6 +87,16 @@ export async function resolveEpisodeServers(options: {
       ok: true as const,
       status: 200,
       body: { data: cached.data, fromCache: true },
+    };
+  }
+
+  if (animeEpisodeId.includes("?ep=")) {
+    const fallbackServers = createFallbackEpisodeServers(animeEpisodeId);
+    memoryCache.set(cacheKey, { data: fallbackServers, fetchedAt: now });
+    return {
+      ok: true as const,
+      status: 200,
+      body: { data: fallbackServers, fallback: true },
     };
   }
 

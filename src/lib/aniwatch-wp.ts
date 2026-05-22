@@ -573,20 +573,57 @@ async function getAnimeNumericId(animeId: string) {
 }
 
 export async function getAniwatchAnimeEpisodes(animeId: string): Promise<IEpisodes> {
-  const numericId = await getAnimeNumericId(animeId);
-  const payload = await fetchJson<{ status?: boolean; success?: boolean; html?: string }>(
-    `${API_BASE_URL}/episode/list/${numericId}`,
-  );
-  const $ = load(payload.html || "");
-  const episodes = $(".ss-list a")
-    .toArray()
-    .map((el) => ({
-      title: text($(el).attr("title")) || text($(el).text()),
-      episodeId: episodeSlugFromHref($(el).attr("href")),
-      number: Number($(el).attr("data-number")) || 0,
-      isFiller: $(el).hasClass("ssl-item-filler"),
-    }))
-    .filter((episode) => episode.episodeId);
+  try {
+    const numericId = await getAnimeNumericId(animeId);
+    const payload = await fetchJson<{ status?: boolean; success?: boolean; html?: string }>(
+      `${API_BASE_URL}/episode/list/${numericId}`,
+    );
+    const $ = load(payload.html || "");
+    const episodes = $(".ss-list a")
+      .toArray()
+      .map((el) => ({
+        title: text($(el).attr("title")) || text($(el).text()),
+        episodeId: episodeSlugFromHref($(el).attr("href")),
+        number: Number($(el).attr("data-number")) || 0,
+        isFiller: $(el).hasClass("ssl-item-filler"),
+      }))
+      .filter((episode) => episode.episodeId);
+
+    if (episodes.length) {
+      return {
+        totalEpisodes: episodes.length,
+        episodes,
+      };
+    }
+  } catch (error) {
+    console.warn(`[ANIME_EPISODES] Aniwatch episodes failed for ${animeId}; trying AnimeKai fallback:`, error);
+  }
+
+  return getAnikaiAnimeEpisodes(animeId);
+}
+
+async function getAnikaiAnimeEpisodes(animeId: string): Promise<IEpisodes> {
+  const html = await fetchText(`${ANIKAI_BASE_URL.replace(/\/$/, "")}/watch/${animeId}`);
+  const $ = load(html);
+  const subCount = numberFromText($(".main-entity .info .sub, .entity-section .info .sub").first().text());
+  const dubCount = numberFromText($(".main-entity .info .dub, .entity-section .info .dub").first().text());
+  const totalFromDetails = Number(
+    $(".detail div")
+      .toArray()
+      .map((el) => text($(el).text()).match(/^Episodes:\s*(\d+)/i)?.[1])
+      .find(Boolean),
+  ) || null;
+  const availableCount = Math.max(subCount || 0, dubCount || 0);
+  const totalEpisodes = availableCount || totalFromDetails || 0;
+  const episodes = Array.from({ length: totalEpisodes }, (_, index) => {
+    const number = index + 1;
+    return {
+      title: `Episode ${number}`,
+      episodeId: `${animeId}?ep=${number}`,
+      number,
+      isFiller: false,
+    };
+  });
 
   return {
     totalEpisodes: episodes.length,
