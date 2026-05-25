@@ -1,4 +1,5 @@
 import { readThroughCache } from "@/lib/hot-cache";
+import { getAnikaiSearchSuggestions, searchAnikaiAnime } from "@/lib/anikai";
 import {
   getAniwatchAnimeDetails,
   getAniwatchAnimeEpisodes,
@@ -204,7 +205,14 @@ export async function getCachedSearchResults(params: SearchAnimeParams) {
       key,
       ttlSeconds: 60 * 5,
     },
-    () => searchAniwatchAnime(params),
+    async () => {
+      try {
+        return await searchAnikaiAnime(params);
+      } catch (error) {
+        console.warn("[ANIME_SEARCH] AnimeKai search failed; falling back to Aniwatch:", error);
+        return searchAniwatchAnime(params);
+      }
+    },
   );
 }
 
@@ -214,7 +222,17 @@ export async function getCachedSearchSuggestions(query: string) {
       key: `anime-search-suggestions:v4:${query.trim().toLowerCase()}`,
       ttlSeconds: 60 * 5,
     },
-    () => getAniwatchSearchSuggestions(query),
+    async () => {
+      try {
+        return await getAnikaiSearchSuggestions(query);
+      } catch (error) {
+        console.warn(
+          "[ANIME_SEARCH_SUGGESTIONS] AnimeKai suggestions failed; falling back to Aniwatch:",
+          error,
+        );
+        return getAniwatchSearchSuggestions(query);
+      }
+    },
   );
 }
 

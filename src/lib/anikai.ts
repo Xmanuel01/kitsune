@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { IAnimeSearch, ISuggestionAnime, SearchAnimeParams, Type } from "@/types/anime";
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 
 const ANIKAI_BASE_URL = (process.env.ANIKAI_SOURCE_URL || "https://anikai.to").replace(/\/$/, "");
@@ -100,6 +101,73 @@ function base64UrlEncode(input: string) {
 function base64UrlDecode(input: string) {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(normalized, "base64").toString("latin1");
+}
+
+function normalizeType(value?: string | null) {
+  const normalized = text(value).toUpperCase();
+  if (normalized.includes("MOVIE")) return Type.Movie;
+  if (normalized.includes("ONA")) return Type.Ona;
+  return Type.Tv;
+}
+
+function slugFromHref(href?: string | null) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, ANIKAI_BASE_URL);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "watch" && parts[1]) return parts[1];
+    return parts[parts.length - 1] || "";
+  } catch {
+    return href.replace(/^\/+|\/+$/g, "").split("/").pop()?.split(/[?#]/)[0] || "";
+  }
+}
+
+function numberFromText(value?: string | null) {
+  return Number(text(value).match(/\d+/)?.[0]) || null;
+}
+
+function cardFromAnikaiElement($: ReturnType<typeof load>, el: any) {
+  const root = $(el);
+  const href =
+    root.attr("href") ||
+    root.find("a[href*='/watch/']").first().attr("href") ||
+    root.find(".inner > a").first().attr("href");
+  const titleElement = root.find(".title").first();
+  const infoNodes = root.find(".info").children().toArray().map((entry) => text($(entry).text()));
+  const infoText = infoNodes.join(" ");
+
+  return {
+    id: slugFromHref(href),
+    name: text(titleElement.text()) || text(root.attr("title")),
+    jname: text(titleElement.attr("data-jp")) || text(titleElement.text()) || text(root.attr("title")),
+    poster:
+      text(root.find(".poster img").first().attr("data-src")) ||
+      text(root.find(".poster img").first().attr("src")) ||
+      text(root.find("img").first().attr("data-src")) ||
+      text(root.find("img").first().attr("src")),
+    episodes: {
+      sub: numberFromText(root.find(".info .sub").first().text()),
+      dub: numberFromText(root.find(".info .dub").first().text()),
+    },
+    type: normalizeType(infoNodes[infoNodes.length - 1] || infoText),
+  };
+}
+
+function uniqueById<T extends { id: string }>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function parseTotalPages($: ReturnType<typeof load>) {
+  const pages = $("ul.pagination a.page-link, ul.pagination .page-link")
+    .toArray()
+    .map((el) => Number(text($(el).text())))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return pages.length ? Math.max(...pages) : 1;
 }
 
 function animekaiEncrypt(input: string) {
@@ -455,5 +523,64 @@ export async function getAnikaiEpisodeSource(
     provider: "anikai",
     iframeUrl: decrypted.url,
     fallbackFromServer: selected.name,
+  };
+}
+
+export async function searchAnikaiAnime(params: SearchAnimeParams): Promise<IAnimeSearch> {
+  const query = text(params.q);
+  const page = Math.max(1, Number(params.page) || 1);
+  const url = new URL("/browser", ANIKAI_BASE_URL);
+  url.searchParams.set("keyword", query.replace(/[\W_]+/g, "+"));
+  url.searchParams.set("page", String(page));
+
+  const html = await fetchText(url.href, `${ANIKAI_BASE_URL}/home`);
+  const $ = load(html);
+  const animes = uniqueById(
+    $(".aitem")
+      .toArray()
+      .map((el) => cardFromAnikaiElement($, el))
+      .filter((anime) => anime.id && anime.name && anime.poster),
+  );
+  const totalPages = parseTotalPages($);
+
+  return {
+    animes,
+    totalPages,
+    hasNextPage: page < totalPages,
+    currentPage: animes.length ? page : 0,
+  };
+}
+
+export async function getAnikaiSearchSuggestions(query: string) {
+  const payload = await fetchJson<{ result?: { html?: string } | string }>(
+    `${ANIKAI_BASE_URL}/ajax/anime/search?keyword=${encodeURIComponent(text(query).replace(/[\W_]+/g, "+"))}`,
+    `${ANIKAI_BASE_URL}/browser`,
+  );
+  const html =
+    typeof payload.result === "string"
+      ? payload.result
+      : typeof payload.result?.html === "string"
+        ? payload.result.html
+        : "";
+  const $ = load(html);
+
+  return {
+    suggestions: uniqueById(
+      $("a.aitem")
+        .toArray()
+        .map((el) => {
+          const card = cardFromAnikaiElement($, el);
+          return {
+            ...card,
+            moreInfo: $(el)
+              .find(".info")
+              .children()
+              .toArray()
+              .map((entry) => text($(entry).text()))
+              .filter(Boolean),
+          } satisfies ISuggestionAnime;
+        })
+        .filter((anime) => anime.id && anime.name),
+    ),
   };
 }
