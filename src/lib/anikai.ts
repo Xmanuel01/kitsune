@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { IAnimeSearch, ISuggestionAnime, SearchAnimeParams, Type } from "@/types/anime";
 import { IAnimeSchedule } from "@/types/anime-schedule";
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 
@@ -101,6 +102,30 @@ function base64UrlEncode(input: string) {
 function base64UrlDecode(input: string) {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(normalized, "base64").toString("latin1");
+}
+
+function normalizeType(value?: string | null) {
+  const normalized = text(value).toUpperCase();
+  if (normalized.includes("MOVIE")) return Type.Movie;
+  if (normalized.includes("ONA")) return Type.Ona;
+  return Type.Tv;
+}
+
+function slugFromHref(href?: string | null) {
+  if (!href) return "";
+  try {
+    const url = new URL(href, ANIKAI_BASE_URL);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "watch" && parts[1]) return parts[1];
+    return parts[parts.length - 1] || "";
+  } catch {
+    return href.replace(/^\/+|\/+$/g, "").split("/").pop()?.split(/[?#]/)[0] || "";
+  }
+}
+
+function numberFromText(value?: string | null) {
+  const match = text(value).match(/\d+/?.[0];
+  return typeof match === "string" ? Number(match) : null;
 }
 
 function animekaiEncrypt(input: string) {
@@ -228,8 +253,8 @@ async function getBookmarkId(animeId: string) {
   const $ = load(html);
   const bookmarkId =
     $(".user-bookmark").first().attr("data-id") ||
-    $("[data-id][data-al]").first().attr("data-id") ||
-    $("[data-id]").toArray().map((el) => text($(el).attr("data-id"))).find((id) => /^\d+$/.test(id));
+    $('[data-id][data-al]').first().attr("data-id") ||
+    $('[data-id]').toArray().map((el) => text($(el).attr("data-id"))).find((id) => /^\d+$/.test(id));
 
   if (!bookmarkId) {
     throw new Error(`AnimeKai title id was not found for ${animeId}`);
@@ -286,7 +311,7 @@ export async function getAnikaiEpisodeList(animeId: string): Promise<IEpisodes> 
       .toArray()
       .map((el) => {
         const root = $(el);
-        const number = Number(root.attr("num")) || Number(text(root.text()).match(/\d+/)?.[0]) || 0;
+        const number = Number(root.attr("num")) || Number(text(root.text()).match(/\d+/?.[0]) || 0;
         const token = text(root.attr("token"));
         return {
           title: text(root.find("span").first().text()) || `Episode ${number}`,
@@ -508,7 +533,7 @@ export async function getAnikaiSchedule(date?: string): Promise<IAnimeSchedule> 
         time,
         airingTimestamp,
         secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
-        episode: Number(text(root.find(".ep, .episode, .eps").first().text()).match(/\d+/)?.[0]) || 0,
+        episode: Number(text(root.find(".ep, .episode, .eps").first().text()).match(/\d+/?.[0]) || 0,
       };
     })
     .filter((item) => item.id && item.name);
@@ -525,4 +550,94 @@ export async function getAnikaiAnimeDescription(animeId: string) {
     text($(".synopsis").first().text()) ||
     text($('meta[name="description"]').attr("content"))
   );
+}
+
+export async function searchAnikaiAnime(params: SearchAnimeParams): Promise<IAnimeSearch> {
+  const query = text(params.q).replace(/[\W_]+/g, "+").replace(/\++/g, "+").replace(/^\+|\+$/g, "");
+  const page = Math.max(1, Number(params.page) || 1);
+  const url = new URL("/browser", ANIKAI_BASE_URL);
+  url.searchParams.set("keyword", query);
+  url.searchParams.set("page", String(page));
+
+  const html = await fetchText(url.href, `${ANIKAI_BASE_URL}/home`);
+  const $ = load(html);
+  
+  const animes = $(".aitem")
+    .toArray()
+    .map((el) => {
+      const root = $(el);
+      const href = root.attr("href") || root.find("a[href*='/watch/']").first().attr("href") || root.find(".inner > a").first().attr("href");
+      const titleElement = root.find(".title").first();
+      const infoText = root.find(".info").text();
+      
+      return {
+        id: slugFromHref(href),
+        name: text(titleElement.text()) || text(root.attr("title")),
+        jname: text(titleElement.attr("data-jp")) || text(titleElement.text()) || text(root.attr("title")),
+        poster: text(root.find(".poster img").first().attr("data-src")) || text(root.find(".poster img").first().attr("src")) || text(root.find("img").first().attr("src")),
+        episodes: {
+          sub: numberFromText(root.find(".info .sub").first().text()),
+          dub: numberFromText(root.find(".info .dub").first().text()),
+        },
+        type: normalizeType(infoText),
+      };
+    })
+    .filter((anime) => anime.id && anime.name)
+    .slice(0, 48);
+
+  return {
+    animes,
+    totalPages: 1,
+    hasNextPage: false,
+    currentPage: page,
+  };
+}
+
+export async function getAnikaiSearchSuggestions(query: string) {
+  const normalizedQuery = text(query).replace(/[\W_]+/g, "+").replace(/\++/g, "+").replace(/^\+|\+$/g, "");
+  const payload = await fetchJson<{ result?: { html?: string } | string }>(
+    `${ANIKAI_BASE_URL}/ajax/anime/search?keyword=${encodeURIComponent(normalizedQuery)}`,
+    `${ANIKAI_BASE_URL}/browser`,
+  );
+  const html =
+    typeof payload.result === "string"
+      ? payload.result
+      : typeof payload.result?.html === "string"
+        ? payload.result.html
+        : "";
+  const $ = load(html);
+
+  return {
+    suggestions: $("a.aitem")
+      .toArray()
+      .map((el) => {
+        const root = $(el);
+        const href = root.attr("href") || root.find("a[href*='/watch/']").first().attr("href");
+        const titleElement = root.find(".title").first();
+        
+        return {
+          id: slugFromHref(href),
+          name: text(titleElement.text()) || text(root.attr("title")),
+          jname: text(titleElement.attr("data-jp")) || text(titleElement.text()) || text(root.attr("title")),
+          poster: text(root.find(".poster img").first().attr("src")),
+          episodes: {
+            sub: null,
+            dub: null,
+          },
+          type: null,
+          rating: null,
+          release: null,
+          quality: null,
+          genres: [],
+          moreInfo: root
+            .find(".info")
+            .children()
+            .toArray()
+            .map((entry) => text($(entry).text()))
+            .filter(Boolean),
+        } satisfies ISuggestionAnime;
+      })
+      .filter((anime) => anime.id && anime.name)
+      .slice(0, 10),
+  };
 }
