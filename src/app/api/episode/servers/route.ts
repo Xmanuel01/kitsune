@@ -125,6 +125,7 @@ export async function resolveEpisodeServers(options: {
     ? animeEpisodeId
     : toAnikaiPageEpisodeId(animeEpisodeId);
   if (anikaiEpisodeId) {
+    const requestedAnikai = isAnikaiEpisodeId(animeEpisodeId);
     try {
       const data = await getAnikaiEpisodeServers(anikaiEpisodeId);
       memoryCache.set(cacheKey, { data, fetchedAt: now });
@@ -134,7 +135,7 @@ export async function resolveEpisodeServers(options: {
         body: {
           data,
           fallback: true,
-          fallbackReason: animeEpisodeId === anikaiEpisodeId ? undefined : "Aniwatch providers failed",
+          fallbackReason: requestedAnikai ? undefined : "Aniwatch providers failed",
         },
       };
     } catch (scrapeErr: any) {

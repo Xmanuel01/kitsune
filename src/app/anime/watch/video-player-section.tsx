@@ -529,17 +529,23 @@ const VideoPlayerSection: React.FC = () => {
         }
         return;
       }
-      setTimeout(() => {
-        void (async () => {
-          const { error } = await supabase.auth.updateUser({
-            data: { autoSkip: value },
-          });
-          if (!error) {
-            setAuth({ ...auth, autoSkip: value });
+      const persistAutoSkipPreference = async () => {
+        const { error } = await supabase.auth.updateUser({
+          data: { autoSkip: value },
+        });
+        if (!error) {
+          const latestAuth = useAuthStore.getState().auth;
+          if (latestAuth) {
+            setAuth({ ...latestAuth, autoSkip: value });
           } else {
-            console.error("Failed updating autoSkip metadata", error);
+            setAuth({ ...auth, autoSkip: value });
           }
-        })();
+        } else {
+          console.error("Failed updating autoSkip metadata", error);
+        }
+      };
+      setTimeout(() => {
+        void persistAutoSkipPreference();
       }, 0);
     },
     [auth, setAuth],

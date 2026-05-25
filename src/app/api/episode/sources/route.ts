@@ -284,7 +284,9 @@ export async function resolveEpisodeSources(options: {
 
   const anikaiEpisodeId = isAnikaiEpisodeId(episodeId)
     ? episodeId
-    : toAnikaiPageEpisodeId(episodeId);
+    : episodeId.includes("?ep=")
+      ? toAnikaiPageEpisodeId(episodeId)
+      : null;
   if (anikaiEpisodeId) {
     try {
       const data = await getAnikaiEpisodeSource(anikaiEpisodeId, server, category);
