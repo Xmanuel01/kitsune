@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { Element } from "domhandler";
 import { IAnimeSearch, ISuggestionAnime, SearchAnimeParams, Type } from "@/types/anime";
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 
@@ -123,17 +124,22 @@ function slugFromHref(href?: string | null) {
 }
 
 function numberFromText(value?: string | null) {
-  return Number(text(value).match(/\d+/)?.[0]) || null;
+  const match = text(value).match(/\d+/)?.[0];
+  return typeof match === "string" ? Number(match) : null;
 }
 
-function cardFromAnikaiElement($: ReturnType<typeof load>, el: any) {
+function cardFromAnikaiElement($: ReturnType<typeof load>, el: Element) {
   const root = $(el);
   const href =
     root.attr("href") ||
     root.find("a[href*='/watch/']").first().attr("href") ||
     root.find(".inner > a").first().attr("href");
   const titleElement = root.find(".title").first();
-  const infoNodes = root.find(".info").children().toArray().map((entry) => text($(entry).text()));
+  const infoNodes = root
+    .find(".info")
+    .children()
+    .toArray()
+    .map((entry) => $(entry).text().trim());
   const infoText = infoNodes.join(" ");
 
   return {
@@ -168,6 +174,10 @@ function parseTotalPages($: ReturnType<typeof load>) {
     .map((el) => Number(text($(el).text())))
     .filter((value) => Number.isFinite(value) && value > 0);
   return pages.length ? Math.max(...pages) : 1;
+}
+
+function normalizeSearchKeyword(query: string) {
+  return text(query).replace(/[\W_]+/g, "+").replace(/\++/g, "+").replace(/^\+|\+$/g, "");
 }
 
 function animekaiEncrypt(input: string) {
@@ -527,10 +537,10 @@ export async function getAnikaiEpisodeSource(
 }
 
 export async function searchAnikaiAnime(params: SearchAnimeParams): Promise<IAnimeSearch> {
-  const query = text(params.q);
+  const query = normalizeSearchKeyword(params.q);
   const page = Math.max(1, Number(params.page) || 1);
   const url = new URL("/browser", ANIKAI_BASE_URL);
-  url.searchParams.set("keyword", query.replace(/[\W_]+/g, "+"));
+  url.searchParams.set("keyword", query);
   url.searchParams.set("page", String(page));
 
   const html = await fetchText(url.href, `${ANIKAI_BASE_URL}/home`);
@@ -553,7 +563,7 @@ export async function searchAnikaiAnime(params: SearchAnimeParams): Promise<IAni
 
 export async function getAnikaiSearchSuggestions(query: string) {
   const payload = await fetchJson<{ result?: { html?: string } | string }>(
-    `${ANIKAI_BASE_URL}/ajax/anime/search?keyword=${encodeURIComponent(text(query).replace(/[\W_]+/g, "+"))}`,
+    `${ANIKAI_BASE_URL}/ajax/anime/search?keyword=${encodeURIComponent(normalizeSearchKeyword(query))}`,
     `${ANIKAI_BASE_URL}/browser`,
   );
   const html =
@@ -576,7 +586,7 @@ export async function getAnikaiSearchSuggestions(query: string) {
               .find(".info")
               .children()
               .toArray()
-              .map((entry) => text($(entry).text()))
+              .map((entry) => $(entry).text().trim())
               .filter(Boolean),
           } satisfies ISuggestionAnime;
         })
