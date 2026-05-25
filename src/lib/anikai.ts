@@ -547,7 +547,7 @@ export async function searchAnikaiAnime(params: SearchAnimeParams): Promise<IAni
     animes,
     totalPages,
     hasNextPage: page < totalPages,
-    currentPage: animes.length ? page : 0,
+    currentPage: page,
   };
 }
 
