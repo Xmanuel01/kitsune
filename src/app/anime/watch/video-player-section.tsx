@@ -519,7 +519,7 @@ const VideoPlayerSection: React.FC = () => {
   }, []);
 
   const onHandleAutoSkipChange = useCallback(
-    async (value: boolean) => {
+    (value: boolean) => {
       setAutoSkip(value);
       if (!auth) {
         try {
@@ -529,15 +529,18 @@ const VideoPlayerSection: React.FC = () => {
         }
         return;
       }
-      // Persist preference to user metadata in Supabase Auth
-      const { error } = await supabase.auth.updateUser({
-        data: { autoSkip: value },
-      });
-      if (!error) {
-        setAuth({ ...auth, autoSkip: value });
-      } else {
-        console.error("Failed updating autoSkip metadata", error);
-      }
+      setTimeout(() => {
+        void (async () => {
+          const { error } = await supabase.auth.updateUser({
+            data: { autoSkip: value },
+          });
+          if (!error) {
+            setAuth({ ...auth, autoSkip: value });
+          } else {
+            console.error("Failed updating autoSkip metadata", error);
+          }
+        })();
+      }, 0);
     },
     [auth, setAuth],
   );

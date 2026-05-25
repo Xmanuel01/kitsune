@@ -1,5 +1,9 @@
 import { load } from "cheerio";
-import { getAnikaiEpisodeList } from "@/lib/anikai";
+import {
+  getAnikaiAnimeDescription,
+  getAnikaiEpisodeList,
+  getAnikaiSchedule,
+} from "@/lib/anikai";
 import { IAnime, IAnimeData, IAnimeSearch, ISuggestionAnime, LatestCompletedAnime, SearchAnimeParams, SpotlightAnime, TopUpcomingAnime, Type } from "@/types/anime";
 import { IAnimeDetails, RecommendedAnime, RelatedAnime, Season } from "@/types/anime-details";
 import { IAnimeSchedule } from "@/types/anime-schedule";
@@ -505,6 +509,14 @@ export async function getAniwatchAnimeDetails(animeId: string): Promise<IAnimeDe
   const description =
     text($(".description, .film-description, .text").first().text()) ||
     text($('meta[name="description"]').attr("content"));
+  let resolvedDescription = description;
+  if (!resolvedDescription) {
+    try {
+      resolvedDescription = await getAnikaiAnimeDescription(animeId);
+    } catch (error) {
+      console.warn(`[ANIME_DETAILS] AnimeKai description fallback failed for ${animeId}:`, error);
+    }
+  }
   const totalEpisodes = Number($(".ss-list a").length) || 0;
   const related = extractCards($, ".flw-item", 24).map((anime) => ({
     ...anime,
@@ -520,7 +532,7 @@ export async function getAniwatchAnimeDetails(animeId: string): Promise<IAnimeDe
         malId: 0,
         name,
         poster,
-        description,
+        description: resolvedDescription,
         stats: {
           rating: detailListValue($, "rating"),
           quality: "",
@@ -643,29 +655,37 @@ export async function getAniwatchSearchSuggestions(query: string) {
 
 export async function getAniwatchAnimeSchedule(date?: string): Promise<IAnimeSchedule> {
   const targetDate = date || new Date().toISOString().slice(0, 10);
-  const payload = await fetchJson<{ success?: boolean; html?: string }>(
-    `${API_BASE_URL}/schedule/day?date=${encodeURIComponent(targetDate)}`,
-  );
-  const $ = load(payload.html || "");
-  const scheduledAnimes = $("li")
-    .toArray()
-    .map((el) => {
-      const href = $(el).find("a").attr("href");
-      const timeValue = text($(el).find(".time").text());
-      const airingTimestamp = timeValue ? new Date(`${targetDate}T${timeValue}:00`).getTime() : 0;
-      return {
-        id: slugFromHref(href),
-        name: text($(el).find(".film-name, .dynamic-name").first().text()),
-        jname: text($(el).find(".dynamic-name").first().attr("data-jname")),
-        time: timeValue,
-        airingTimestamp,
-        secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
-        episode: Number(text($(el).find("button").text()).match(/\d+/)?.[0]) || 0,
-      };
-    })
-    .filter((item) => item.id && item.name);
+  try {
+    const payload = await fetchJson<{ success?: boolean; html?: string }>(
+      `${API_BASE_URL}/schedule/day?date=${encodeURIComponent(targetDate)}`,
+    );
+    const $ = load(payload.html || "");
+    const scheduledAnimes = $("li")
+      .toArray()
+      .map((el) => {
+        const href = $(el).find("a").attr("href");
+        const timeValue = text($(el).find(".time").text());
+        const airingTimestamp = timeValue ? new Date(`${targetDate}T${timeValue}:00`).getTime() : 0;
+        return {
+          id: slugFromHref(href),
+          name: text($(el).find(".film-name, .dynamic-name").first().text()),
+          jname: text($(el).find(".dynamic-name").first().attr("data-jname")),
+          time: timeValue,
+          airingTimestamp,
+          secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
+          episode: Number(text($(el).find("button").text()).match(/\d+/)?.[0]) || 0,
+        };
+      })
+      .filter((item) => item.id && item.name);
 
-  return { scheduledAnimes };
+    if (scheduledAnimes.length) {
+      return { scheduledAnimes };
+    }
+  } catch (error) {
+    console.warn("[ANIME_SCHEDULE] Aniwatch schedule fetch failed, using AnimeKai fallback:", error);
+  }
+
+  return getAnikaiSchedule(targetDate);
 }
 
 function decodeServerUrl(hash?: string | null) {

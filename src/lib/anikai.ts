@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { IAnimeSchedule } from "@/types/anime-schedule";
 import { IEpisodeServers, IEpisodeSource, IEpisodes } from "@/types/episodes";
 
 const ANIKAI_BASE_URL = (process.env.ANIKAI_SOURCE_URL || "https://anikai.to").replace(/\/$/, "");
@@ -456,4 +457,72 @@ export async function getAnikaiEpisodeSource(
     iframeUrl: decrypted.url,
     fallbackFromServer: selected.name,
   };
+}
+
+function parseAnikaiAiringTimestamp(date: string, timeText: string) {
+  const normalizedTime = text(timeText);
+  if (!normalizedTime) return 0;
+  const match = normalizedTime.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return 0;
+  const hours = Number(match[1]) || 0;
+  const minutes = Number(match[2]) || 0;
+  const timestamp = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(timestamp.getTime())) return 0;
+  timestamp.setHours(hours, minutes, 0, 0);
+  return timestamp.getTime();
+}
+
+export async function getAnikaiSchedule(date?: string): Promise<IAnimeSchedule> {
+  const targetDate = date || new Date().toISOString().slice(0, 10);
+  const html = await fetchText(`${ANIKAI_BASE_URL}/home`, `${ANIKAI_BASE_URL}/`);
+  const $ = load(html);
+  const scheduleSection = $(".swiper-slide, section")
+    .toArray()
+    .find((el) => {
+      const title = text($(el).find(".stitle, h2, h3").first().text()).toLowerCase();
+      return title.includes("schedule");
+    });
+  const roots = scheduleSection ? $(scheduleSection).find(".aitem, li").toArray() : $(".schedule .aitem, .schedule li").toArray();
+  const scheduledAnimes = roots
+    .map((el) => {
+      const root = $(el);
+      const href =
+        root.attr("href") ||
+        root.find("a[href*='/watch/']").first().attr("href") ||
+        root.find("a").first().attr("href");
+      const id = href ? href.replace(/^.*\/watch\//, "").split(/[?#]/)[0].replace(/\/+$/g, "") : "";
+      const name =
+        text(root.find(".title").first().text()) ||
+        text(root.find(".name").first().text()) ||
+        text(root.find("a[title]").first().attr("title"));
+      const jname = text(root.find(".title").first().attr("data-jp")) || name;
+      const time =
+        text(root.find(".time").first().text()) ||
+        text(root.find("[data-time]").first().attr("data-time")) ||
+        text(root.find("time").first().text());
+      const airingTimestamp = parseAnikaiAiringTimestamp(targetDate, time);
+      return {
+        id,
+        name,
+        jname,
+        time,
+        airingTimestamp,
+        secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
+        episode: Number(text(root.find(".ep, .episode, .eps").first().text()).match(/\d+/)?.[0]) || 0,
+      };
+    })
+    .filter((item) => item.id && item.name);
+
+  return { scheduledAnimes };
+}
+
+export async function getAnikaiAnimeDescription(animeId: string) {
+  const html = await fetchText(`${ANIKAI_BASE_URL}/watch/${animeId}`, `${ANIKAI_BASE_URL}/home`);
+  const $ = load(html);
+  return (
+    text($(".desc").first().text()) ||
+    text($(".description").first().text()) ||
+    text($(".synopsis").first().text()) ||
+    text($('meta[name="description"]').attr("content"))
+  );
 }

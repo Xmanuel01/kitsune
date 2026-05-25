@@ -2,6 +2,7 @@ import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
   getAnikaiEpisodeSource,
   isAnikaiEpisodeId,
+  toAnikaiPageEpisodeId,
 } from "@/lib/anikai";
 import {
   getAniwatchWpEpisodeSource,
@@ -200,30 +201,7 @@ export async function resolveEpisodeSources(options: {
     }
   }
 
-  if (isAnikaiEpisodeId(episodeId)) {
-    try {
-      const data = await getAnikaiEpisodeSource(episodeId, server, category);
-      return {
-        ok: true as const,
-        status: 200,
-        body: { data, fromCache: false },
-      };
-    } catch (anikaiError: any) {
-      console.error("[EPISODE_SOURCES] AnimeKai source error:", {
-        episodeId,
-        category,
-        server,
-        message: anikaiError?.message,
-        stack: anikaiError?.stack,
-      });
-      return {
-        ok: false as const,
-        status: 502,
-        body: { error: anikaiError?.message || "AnimeKai scrape failed" },
-      };
-    }
-  }
-
+  let lastError: any = null;
   if (isAniwatchWpEpisodeId(episodeId)) {
     try {
       const data = await getAniwatchWpEpisodeSource(episodeId, server, category);
@@ -249,6 +227,7 @@ export async function resolveEpisodeSources(options: {
         body: { data, fromCache: false },
       };
     } catch (aniwatchWpError: any) {
+      lastError = aniwatchWpError;
       console.error("[EPISODE_SOURCES] aniwatch.co.at source error:", {
         episodeId,
         category,
@@ -256,102 +235,96 @@ export async function resolveEpisodeSources(options: {
         message: aniwatchWpError?.message,
         stack: aniwatchWpError?.stack,
       });
-      return {
-        ok: false as const,
-        status: 502,
-        body: { error: aniwatchWpError?.message || "aniwatch.co.at scrape failed" },
-      };
     }
   }
 
-  let data: any = null;
-  let shouldPersistToCache = true;
   const scraper = await getAniwatchScraper();
-  if (!scraper) {
+  if (scraper) {
+    try {
+      const data = await scraper.getEpisodeSources(episodeId, server, category);
+      if (!data?.iframeUrl && (!Array.isArray(data?.sources) || !data.sources.length)) {
+        throw new Error("aniwatch returned no playable sources");
+      }
+      const recordPayload = {
+        compositeKey,
+        animeEpisodeId: episodeId,
+        category,
+        server,
+        data,
+        fetchedAt: new Date().toISOString(),
+      };
+      await persistSourceRecord(recordPayload);
+      if (!isCachedIframeFallback(data)) {
+        await setCachedValue(
+          {
+            key: hotCacheKey,
+            ttlSeconds: CACHE_TTL_SECONDS,
+          },
+          data,
+        );
+      }
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data, fromCache: false },
+      };
+    } catch (aniwatchError: any) {
+      lastError = aniwatchError;
+      console.error("[EPISODE_SOURCES] aniwatch source error:", {
+        episodeId,
+        category,
+        server,
+        message: aniwatchError?.message,
+        stack: aniwatchError?.stack,
+      });
+    }
+  } else {
+    console.error("[EPISODE_SOURCES] Aniwatch scraper unavailable");
+  }
+
+  const anikaiEpisodeId = isAnikaiEpisodeId(episodeId)
+    ? episodeId
+    : toAnikaiPageEpisodeId(episodeId);
+  if (anikaiEpisodeId) {
+    try {
+      const data = await getAnikaiEpisodeSource(anikaiEpisodeId, server, category);
+      return {
+        ok: true as const,
+        status: 200,
+        body: { data, fromCache: false },
+      };
+    } catch (anikaiError: any) {
+      lastError = anikaiError;
+      console.error("[EPISODE_SOURCES] AnimeKai source error:", {
+        episodeId,
+        anikaiEpisodeId,
+        category,
+        server,
+        message: anikaiError?.message,
+        stack: anikaiError?.stack,
+      });
+    }
+  }
+
+  const megaplayFallback = createMegaplayFallbackData({
+    episodeId,
+    category,
+    fallbackFromServer: server,
+    fallbackReason: lastError?.message || "Aniwatch and AnimeKai providers failed",
+  });
+  if (megaplayFallback) {
     return {
-      ok: false as const,
-      status: 503,
-      body: { error: "scraper unavailable" },
+      ok: true as const,
+      status: 200,
+      body: { data: megaplayFallback, fromCache: false },
     };
   }
 
-  try {
-    data = await scraper.getEpisodeSources(episodeId, server, category);
-  } catch (aniwatchError: any) {
-    console.error("[EPISODE_SOURCES] aniwatch source error:", {
-      episodeId,
-      category,
-      server,
-      message: aniwatchError?.message,
-      stack: aniwatchError?.stack,
-    });
-
-    const megaplayFallback = createMegaplayFallbackData({
-      episodeId,
-      category,
-      fallbackFromServer: server,
-      fallbackReason: aniwatchError?.message || "aniwatch scrape failed",
-    });
-
-    if (!megaplayFallback) {
-      return {
-        ok: false as const,
-        status: 502,
-        body: { error: aniwatchError?.message || "scrape failed" },
-      };
-    }
-
-    shouldPersistToCache = false;
-    data = megaplayFallback;
-  }
-
-  if (!data?.iframeUrl && (!Array.isArray(data?.sources) || !data.sources.length)) {
-    const megaplayFallback = createMegaplayFallbackData({
-      episodeId,
-      category,
-      fallbackFromServer: server,
-      fallbackReason: "aniwatch returned no playable sources",
-    });
-
-    if (!megaplayFallback) {
-      return {
-        ok: false as const,
-        status: 502,
-        body: { error: "No playable sources were found for this episode" },
-      };
-    }
-
-    shouldPersistToCache = false;
-    data = megaplayFallback;
-  }
-
-  const recordPayload = {
-    compositeKey,
-    animeEpisodeId: episodeId,
-    category,
-    server,
-    data,
-    fetchedAt: new Date().toISOString(),
-  };
-
-  if (shouldPersistToCache) {
-    await persistSourceRecord(recordPayload);
-  }
-
-  if (!isCachedIframeFallback(data)) {
-    await setCachedValue(
-      {
-        key: hotCacheKey,
-        ttlSeconds: CACHE_TTL_SECONDS,
-      },
-      data,
-    );
-  }
-
+  const message = lastError?.message || (scraper ? "No playable sources were found for this episode" : "scraper unavailable");
   return {
-    ok: true as const,
-    status: 200,
-    body: { data, fromCache: false },
+    ok: false as const,
+    status: scraper ? 502 : 503,
+    body: { error: message },
   };
 }
 
