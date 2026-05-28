@@ -9,7 +9,7 @@ const targetPath = path.join(
   "index.js",
 );
 
-const defaultSourceUrl = "https://aniwatchtv.to";
+const defaultSourceUrl = "https://aniwaves.ru";
 const configuredSourceUrl =
   process.env.ANIWATCH_SOURCE_URL ||
   (process.env.ANIWATCH_DOMAIN

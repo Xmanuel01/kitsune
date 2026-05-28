@@ -20,7 +20,7 @@ export interface IEpisodeSource {
   sources: Source[];
   anilistID: number;
   malID: number;
-  provider?: "aniwatch" | "megaplay" | "anikai";
+  provider?: "aniwatch" | "aniwaves" | "megaplay" | "anikai";
   iframeUrl?: string;
   fallbackFromServer?: string;
   fallbackReason?: string;

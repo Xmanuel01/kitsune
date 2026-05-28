@@ -135,7 +135,7 @@ export async function getCachedHomePageData() {
   try {
     return await readThroughCache<IAnimeData>(
       {
-        key: "home-page:v7",
+        key: "home-page:v8",
         ttlSeconds: 60 * 5,
       },
       () => getAniwatchHomePageData(),
@@ -157,7 +157,7 @@ export async function getCachedAnimeDetails(animeId: string) {
   try {
     return await readThroughCache<IAnimeDetails>(
       {
-        key: `anime-details:v4:${animeId}`,
+        key: `anime-details:v5:${animeId}`,
         ttlSeconds: 60 * 30,
       },
       () => getAniwatchAnimeDetails(animeId),
@@ -179,7 +179,7 @@ export async function getCachedAnimeEpisodes(animeId: string) {
   try {
     return await readThroughCache<IEpisodes>(
       {
-        key: `anime-episodes:v6:${animeId}`,
+        key: `anime-episodes:v7:${animeId}`,
         ttlSeconds: 60 * 30,
       },
       () => getAniwatchAnimeEpisodes(animeId),
@@ -198,7 +198,7 @@ export async function getCachedAnimeEpisodes(animeId: string) {
 }
 
 export async function getCachedSearchResults(params: SearchAnimeParams) {
-  const key = `anime-search:v4:${stableStringify(params)}`;
+  const key = `anime-search:v5:${stableStringify(params)}`;
   return readThroughCache(
     {
       key,
@@ -211,7 +211,7 @@ export async function getCachedSearchResults(params: SearchAnimeParams) {
 export async function getCachedSearchSuggestions(query: string) {
   return readThroughCache(
     {
-      key: `anime-search-suggestions:v4:${query.trim().toLowerCase()}`,
+      key: `anime-search-suggestions:v5:${query.trim().toLowerCase()}`,
       ttlSeconds: 60 * 5,
     },
     () => getAniwatchSearchSuggestions(query),
@@ -221,7 +221,7 @@ export async function getCachedSearchSuggestions(query: string) {
 export async function getCachedAnimeSchedule(date?: string) {
   return readThroughCache<IAnimeSchedule>(
     {
-      key: `anime-schedule:v4:${date || "today"}`,
+      key: `anime-schedule:v5:${date || "today"}`,
       ttlSeconds: 60 * 10,
     },
     () => getAniwatchAnimeSchedule(date),
