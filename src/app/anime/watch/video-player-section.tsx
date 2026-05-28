@@ -175,28 +175,6 @@ function BrandedPlayerFallback({
   const [isLoaded, setIsLoaded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const playerRef = React.useRef<HTMLDivElement>(null);
-  const isAnimeKaiWatchPage =
-    typeof src === "string" && /^https:\/\/(?:www\.)?anikai\.to\/watch\//i.test(src);
-  const iframeClassName = `${
-    isAnimeKaiWatchPage ? "absolute" : "relative"
-  } z-10 transition-opacity duration-300 ${
-    isLoaded ? "opacity-100" : "opacity-0"
-  }`;
-  const iframeStyle: React.CSSProperties = isAnimeKaiWatchPage
-    ? {
-        border: 0,
-        height: "calc(100% + clamp(170px, 18vw, 285px))",
-        left: "clamp(-70px, -3.8vw, -28px)",
-        overflow: "hidden",
-        top: "clamp(-245px, -15.5vw, -145px)",
-        width: "calc(100% + clamp(56px, 7.6vw, 140px))",
-      }
-    : {
-        border: 0,
-        height: "100%",
-        overflow: "hidden",
-        width: "calc(100% + 18px)",
-      };
 
   useEffect(() => {
     setIsLoaded(false);
@@ -244,8 +222,10 @@ function BrandedPlayerFallback({
           allowFullScreen
           referrerPolicy="no-referrer"
           scrolling="no"
-          className={iframeClassName}
-          style={iframeStyle}
+          className={`relative z-10 h-full w-[calc(100%+18px)] transition-opacity duration-300 ${
+            isLoaded ? "opacity-100" : "opacity-0"
+          }`}
+          style={{ border: 0, overflow: "hidden" }}
           onLoad={() => setIsLoaded(true)}
         />
       ) : null}

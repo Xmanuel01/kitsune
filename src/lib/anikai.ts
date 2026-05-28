@@ -124,8 +124,8 @@ function slugFromHref(href?: string | null) {
 }
 
 function numberFromText(value?: string | null) {
-  const match = text(value).match(/\d+/?.[0];
-  return typeof match === "string" ? Number(match) : null;
+  const match = text(value).match(/\d+/)?.[0];
+  return match ? Number(match) : null;
 }
 
 function animekaiEncrypt(input: string) {
@@ -311,7 +311,7 @@ export async function getAnikaiEpisodeList(animeId: string): Promise<IEpisodes> 
       .toArray()
       .map((el) => {
         const root = $(el);
-        const number = Number(root.attr("num")) || Number(text(root.text()).match(/\d+/?.[0]) || 0;
+        const number = Number(root.attr("num")) || Number(text(root.text()).match(/\d+/)?.[0]) || 0;
         const token = text(root.attr("token"));
         return {
           title: text(root.find("span").first().text()) || `Episode ${number}`,
@@ -380,13 +380,7 @@ async function getAnikaiServers(episodeId: string) {
 export async function getAnikaiEpisodeServers(episodeId: string): Promise<IEpisodeServers> {
   const pageRef = parseAnikaiEpisodeId(episodeId);
   if (episodeId.startsWith("anikai-page:") && pageRef) {
-    return {
-      episodeId,
-      episodeNo: String(pageRef.number || 0),
-      sub: [{ serverId: 1, serverName: "hd-1" }],
-      dub: [{ serverId: 1, serverName: "hd-1" }],
-      raw: [],
-    };
+    throw new Error("AnimeKai watch-page fallback is disabled for streaming");
   }
 
   const { ref, servers } = await getAnikaiServers(episodeId);
@@ -417,21 +411,7 @@ export async function getAnikaiEpisodeSource(
 ): Promise<IEpisodeSource> {
   const pageRef = parseAnikaiEpisodeId(episodeId);
   if (episodeId.startsWith("anikai-page:") && pageRef) {
-    return {
-      headers: {
-        Referer: `${ANIKAI_BASE_URL}/`,
-      },
-      tracks: [],
-      intro: { start: 0, end: 0 },
-      outro: { start: 0, end: 0 },
-      sources: [],
-      anilistID: 0,
-      malID: 0,
-      provider: "anikai",
-      iframeUrl: `${ANIKAI_BASE_URL}/watch/${pageRef.animeId}#ep=${pageRef.number}`,
-      fallbackFromServer: "AnimeKai",
-      fallbackReason: "AnimeKai ajax stream endpoint blocked server-side resolution",
-    };
+    throw new Error("AnimeKai watch-page fallback is disabled for streaming");
   }
 
   const { ref, servers } = await getAnikaiServers(episodeId);
@@ -533,7 +513,7 @@ export async function getAnikaiSchedule(date?: string): Promise<IAnimeSchedule> 
         time,
         airingTimestamp,
         secondsUntilAiring: airingTimestamp ? Math.floor((airingTimestamp - Date.now()) / 1000) : 0,
-        episode: Number(text(root.find(".ep, .episode, .eps").first().text()).match(/\d+/?.[0]) || 0,
+        episode: Number(text(root.find(".ep, .episode, .eps").first().text()).match(/\d+/)?.[0]) || 0,
       };
     })
     .filter((item) => item.id && item.name);
@@ -624,11 +604,7 @@ export async function getAnikaiSearchSuggestions(query: string) {
             sub: null,
             dub: null,
           },
-          type: null,
-          rating: null,
-          release: null,
-          quality: null,
-          genres: [],
+          type: undefined,
           moreInfo: root
             .find(".info")
             .children()

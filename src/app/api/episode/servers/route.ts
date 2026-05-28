@@ -4,7 +4,6 @@ import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
   getAnikaiEpisodeServers,
   isAnikaiEpisodeId,
-  toAnikaiPageEpisodeId,
 } from "@/lib/anikai";
 import {
   getAniwatchWpEpisodeServers,
@@ -123,7 +122,7 @@ export async function resolveEpisodeServers(options: {
 
   const anikaiEpisodeId = isAnikaiEpisodeId(animeEpisodeId)
     ? animeEpisodeId
-    : toAnikaiPageEpisodeId(animeEpisodeId);
+    : null;
   if (anikaiEpisodeId) {
     const requestedAnikai = isAnikaiEpisodeId(animeEpisodeId);
     try {

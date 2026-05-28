@@ -2,7 +2,6 @@ import { getAniwatchScraper } from "@/lib/aniwatch";
 import {
   getAnikaiEpisodeSource,
   isAnikaiEpisodeId,
-  toAnikaiPageEpisodeId,
 } from "@/lib/anikai";
 import {
   getAniwatchWpEpisodeSource,
@@ -284,9 +283,7 @@ export async function resolveEpisodeSources(options: {
 
   const anikaiEpisodeId = isAnikaiEpisodeId(episodeId)
     ? episodeId
-    : episodeId.includes("?ep=")
-      ? toAnikaiPageEpisodeId(episodeId)
-      : null;
+    : null;
   if (anikaiEpisodeId) {
     try {
       const data = await getAnikaiEpisodeSource(anikaiEpisodeId, server, category);
@@ -312,7 +309,7 @@ export async function resolveEpisodeSources(options: {
     episodeId,
     category,
     fallbackFromServer: server,
-    fallbackReason: lastError?.message || "Aniwatch and AnimeKai providers failed",
+    fallbackReason: lastError?.message || "Aniwatch providers failed",
   });
   if (megaplayFallback) {
     return {
