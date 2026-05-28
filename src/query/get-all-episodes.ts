@@ -7,7 +7,7 @@ export const allEpisodesQueryKey = (animeId: string) =>
   [GET_ALL_EPISODES, animeId] as const;
 
 export const getAllEpisodes = async (animeId: string) => {
-  const res = await api.get(`/api/anime/${animeId}/episodes`);
+  const res = await api.get(`/api/anime-episodes/${animeId}`);
   return res.data.data as IEpisodes;
 };
 

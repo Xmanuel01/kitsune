@@ -90,7 +90,7 @@ export async function resolveEpisodeServers(options: {
       };
     } catch (scrapeErr: any) {
       lastError = scrapeErr;
-      console.error("[EPISODE_SERVERS] aniwatch.co.at episode server error:", {
+      console.error("[EPISODE_SERVERS] Aniwatch-compatible episode server error:", {
         animeEpisodeId,
         message: scrapeErr?.message,
         stack: scrapeErr?.stack,

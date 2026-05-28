@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const CACHE_TTL_SECONDS = 60 * 30;
-const SOURCE_CACHE_VERSION = "v7";
+const SOURCE_CACHE_VERSION = "v8";
 
 type EpisodeCategory = "sub" | "dub" | "raw";
 
@@ -227,7 +227,7 @@ export async function resolveEpisodeSources(options: {
       };
     } catch (aniwatchWpError: any) {
       lastError = aniwatchWpError;
-      console.error("[EPISODE_SOURCES] aniwatch.co.at source error:", {
+      console.error("[EPISODE_SOURCES] Aniwatch-compatible source error:", {
         episodeId,
         category,
         server,
